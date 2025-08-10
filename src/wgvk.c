@@ -25,6 +25,7 @@
  */
 
 #include "wgvk_config.h"
+#include <stdatomic.h>
 #define VK_NO_PROTOTYPES
 #include "vulkan/vulkan_core.h"
 #define VOLK_IMPLEMENTATION
@@ -1332,7 +1333,7 @@ WGPUDevice wgpuAdapterCreateDevice(WGPUAdapter adapter, const WGPUDeviceDescript
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
         };
         retDevice->functions.vkAllocateCommandBuffers(retDevice->device, &cbai, &retDevice->frameCaches[i].finalTransitionBuffer);
-        printf("[DEBUG] ftb of fif %u is %p\n", i, retDevice->frameCaches[i].finalTransitionBuffer);
+        //printf("[DEBUG] ftb of fif %u is %p\n", i, retDevice->frameCaches[i].finalTransitionBuffer);
         retDevice->frameCaches[i].finalTransitionFence = wgpuDeviceCreateFence(retDevice);
     }
     retQueue->presubmitCache = wgpuDeviceCreateCommandEncoder(retDevice, &cedesc);
@@ -1660,7 +1661,7 @@ WGPUFuture wgpuBufferMapAsync(WGPUBuffer buffer, WGPUMapMode mode, size_t offset
         .functionCalledOnWaitAny = wgpuBufferMapSync,
         .freeUserData = RL_FREE
     };
-    uint64_t id = buffer->device->adapter->instance->currentFutureId++; //atomic?
+    uint64_t id = atomic_fetch_add_explicit(&buffer->device->adapter->instance->currentFutureId, 1, memory_order_relaxed);
     FutureIDMap_put(&buffer->device->adapter->instance->g_futureIDMap, id, ret);
     return (WGPUFuture){ id };
     EXIT();
@@ -2344,11 +2345,12 @@ WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(WGPUDevice device, const WGPUC
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             .commandBufferCount = 1,
         };
-        printf("Allocating commandbuffer from pool %d\n", (int)ret->cacheIndex);
         device->functions.vkAllocateCommandBuffers(device->device, &bai, &ret->buffer);
+        //printf("Allocating cb %p from pool %d\n", ret->buffer, (int)ret->cacheIndex);
     }
     else{
         ret->buffer = device->frameCaches[ret->cacheIndex].commandBuffers.data[device->frameCaches[ret->cacheIndex].commandBuffers.size - 1];
+        //printf("Recycling cb %p from pool %d\n",  ret->buffer, (int)ret->cacheIndex);
         VkCommandBufferVector_pop_back(&device->frameCaches[ret->cacheIndex].commandBuffers);
         //vkResetCommandBuffer(ret->buffer, 0);
     }
@@ -3875,11 +3877,11 @@ void wgpuQueueSubmit(WGPUQueue queue, size_t commandCount, const WGPUCommandBuff
             .pCommandBuffers = finalSubmittable.data,
         };
         if(finalSubmittable.size){
-            printf("Submitting:\n");
-            for(uint32_t i = 0;i < finalSubmittable.size;i++){
-                printf("  %p\n", finalSubmittable.data[i]);
-            }
-            printf("with fence %p\n", fence);
+            //printf("Submitting:\n");
+            //for(uint32_t i = 0;i < finalSubmittable.size;i++){
+            //    printf("  %p\n", finalSubmittable.data[i]);
+            //}
+            //printf("with fence %p\n", fence);
         }
         ++queue->syncState[cacheIndex].submits;
         WGPUFence submitFence = fence;
@@ -5563,7 +5565,7 @@ void wgpuSurfacePresent(WGPUSurface surface){
     
     WGPUFence finalTransitionFence = surface->device->frameCaches[cacheIndex].finalTransitionFence;
     wgpuFenceAddRef(finalTransitionFence);
-    printf("Submitting %p with fence %p\n", transitionBuffer, finalTransitionFence);
+    //printf("Submitting %p with fence %p\n", transitionBuffer, finalTransitionFence);
     device->functions.vkQueueSubmit(surface->device->queue->graphicsQueue, 1, &cbsinfo, finalTransitionFence->fence);
     
     finalTransitionFence->state = WGPUFenceState_InUse;
@@ -5672,8 +5674,21 @@ void wgpuDeviceTick(WGPUDevice device){
     }
     unusedBuffers->size += usedBuffers->size;
     WGPUBufferVector_clear(usedBuffers);//(WGPUBufferVector *dest, const WGPUBufferVector *source)
+    VkCommandPool poolToClear = device->frameCaches[device->submittedFrames % framesInFlight].commandPool;
+    
+    //device->functions.vkResetCommandPool(device->device, poolToClear, 0);
+
+    for(size_t i = 0;i < queue->pendingCommandBuffers[cacheIndex].current_capacity;i++){
+        PendingCommandBufferMap_kv_pair* entry_pair = queue->pendingCommandBuffers[cacheIndex].table + i;
+        if(entry_pair->key){
+            const WGPUCommandBufferVector* vector = &entry_pair->value;
+            for(size_t j = 0;j < vector->size;j++){
+                device->functions.vkFreeCommandBuffers(device->device, device->frameCaches[vector->data[j]->cacheIndex].commandPool, 1, &vector->data[j]->buffer);
+            }
+        }
+    }
     PendingCommandBufferMap_clear(&queue->pendingCommandBuffers[cacheIndex]);
-    device->functions.vkResetCommandPool(device->device, device->frameCaches[device->submittedFrames % framesInFlight].commandPool, 0);
+    
     
     
     WGPUCommandEncoderDescriptor cedesc zeroinit;
@@ -6629,7 +6644,9 @@ WGPUFuture wgpuShaderModuleGetReflectionInfo(WGPUShaderModule shaderModule, WGPU
         .userdataForFunction = udff,
         .freeUserData = RL_FREE
     };
-    WGPUFuture rete = { shaderModule->device->adapter->instance->currentFutureId++ };
+    WGPUFuture rete = { 
+        atomic_fetch_add_explicit(&shaderModule->device->adapter->instance->currentFutureId, 1, memory_order_relaxed)
+    };
     FutureIDMap_put(&instance->g_futureIDMap, rete.id, ret);
     return rete;
     EXIT();
@@ -6957,16 +6974,280 @@ WGPUQuerySet wgpuDeviceCreateQuerySet(WGPUDevice device, const WGPUQuerySetDescr
         RL_FREE(ret);
         return NULL;
     }
-    return ret; 
     EXIT();
+    return ret; 
 }
-WGPUFuture wgpuDeviceCreateRenderPipelineAsync(WGPUDevice device, WGPURenderPipelineDescriptor const * descriptor, WGPUCreateRenderPipelineAsyncCallbackInfo callbackInfo) {                                                                                                                                                                              ENTRY();
-return (WGPUFuture){0};                                                                                                                                                                              EXIT();
-                                                                                                                                                                                                      }
-void wgpuDeviceDestroy(WGPUDevice device) {
-     ENTRY();
 
-     EXIT();
+typedef struct CreateRenderPipelineAsyncState{
+    wgvk_thread_t thread;
+    WGPUDevice device;
+    WGPURenderPipelineDescriptor* rpdesc;
+    WGPUCreateRenderPipelineAsyncCallbackInfo callbackInfo;
+    _Atomic WGPURenderPipeline renderPipeline;
+    _Atomic uint32_t completed;
+}CreateRenderPipelineAsyncState;
+
+
+#include <stdlib.h>
+#include <string.h>
+
+// Forward declaration for recursive calls
+static WGPURenderPipelineDescriptor* copyRenderPipelineDescriptor(const WGPURenderPipelineDescriptor* desc);
+
+static WGPUVertexState* copyVertexState(const WGPUVertexState* vertexState) {
+    if (!vertexState) {
+        return NULL;
+    }
+
+    WGPUVertexState* newVertexState = (WGPUVertexState*)RL_MALLOC(sizeof(WGPUVertexState));
+    if (!newVertexState) {
+        return NULL;
+    }
+    memcpy(newVertexState, vertexState, sizeof(WGPUVertexState));
+
+    if (vertexState->entryPoint.data) {
+        char* newEntryPoint = (char*)RL_MALLOC(vertexState->entryPoint.length + 1);
+        if (!newEntryPoint) {
+            free(newVertexState);
+            return NULL;
+        }
+        memcpy(newEntryPoint, vertexState->entryPoint.data, vertexState->entryPoint.length);
+        newEntryPoint[vertexState->entryPoint.length] = '\0';
+        newVertexState->entryPoint.data = newEntryPoint;
+    }
+
+    if (vertexState->constantCount > 0 && vertexState->constants) {
+        WGPUConstantEntry* newConstants = (WGPUConstantEntry*)RL_MALLOC(sizeof(WGPUConstantEntry) * vertexState->constantCount);
+        if (!newConstants) {
+            if (newVertexState->entryPoint.data) free((void*)newVertexState->entryPoint.data);
+            free(newVertexState);
+            return NULL;
+        }
+        memcpy(newConstants, vertexState->constants, sizeof(WGPUConstantEntry) * vertexState->constantCount);
+        newVertexState->constants = newConstants;
+    }
+
+    if (vertexState->bufferCount > 0 && vertexState->buffers) {
+        WGPUVertexBufferLayout* newBuffers = (WGPUVertexBufferLayout*)RL_MALLOC(sizeof(WGPUVertexBufferLayout) * vertexState->bufferCount);
+        if (!newBuffers) {
+            if (newVertexState->entryPoint.data) free((void*)newVertexState->entryPoint.data);
+            if (newVertexState->constants) free((void*)newVertexState->constants);
+            free(newVertexState);
+            return NULL;
+        }
+        for (size_t i = 0; i < vertexState->bufferCount; ++i) {
+            memcpy(&newBuffers[i], &vertexState->buffers[i], sizeof(WGPUVertexBufferLayout));
+            if (vertexState->buffers[i].attributeCount > 0 && vertexState->buffers[i].attributes) {
+                WGPUVertexAttribute* newAttributes = (WGPUVertexAttribute*)RL_MALLOC(sizeof(WGPUVertexAttribute) * vertexState->buffers[i].attributeCount);
+                if (!newAttributes) {
+                    // Cleanup allocated memory
+                    for (size_t j = 0; j < i; ++j) {
+                        if (newBuffers[j].attributes) free((void*)newBuffers[j].attributes);
+                    }
+                    free(newBuffers);
+                    if (newVertexState->entryPoint.data) free((void*)newVertexState->entryPoint.data);
+                    if (newVertexState->constants) free((void*)newVertexState->constants);
+                    free(newVertexState);
+                    return NULL;
+                }
+                memcpy(newAttributes, vertexState->buffers[i].attributes, sizeof(WGPUVertexAttribute) * vertexState->buffers[i].attributeCount);
+                newBuffers[i].attributes = newAttributes;
+            }
+        }
+        newVertexState->buffers = newBuffers;
+    }
+
+    return newVertexState;
+}
+
+WGPUDepthStencilState* copyDepthStencilState(const WGPUDepthStencilState* depthStencilState) {
+    if (!depthStencilState) {
+        return NULL;
+    }
+
+    WGPUDepthStencilState* newDepthStencilState = (WGPUDepthStencilState*)malloc(sizeof(WGPUDepthStencilState));
+    if (!newDepthStencilState) {
+        return NULL;
+    }
+    memcpy(newDepthStencilState, depthStencilState, sizeof(WGPUDepthStencilState));
+    return newDepthStencilState;
+}
+
+WGPUFragmentState* copyFragmentState(const WGPUFragmentState* fragmentState) {
+    if (!fragmentState) {
+        return NULL;
+    }
+
+    WGPUFragmentState* newFragmentState = (WGPUFragmentState*)malloc(sizeof(WGPUFragmentState));
+    if (!newFragmentState) {
+        return NULL;
+    }
+    memcpy(newFragmentState, fragmentState, sizeof(WGPUFragmentState));
+
+    if (fragmentState->entryPoint.data) {
+        char* newEntryPoint = (char*)malloc(fragmentState->entryPoint.length + 1);
+        if (!newEntryPoint) {
+            free(newFragmentState);
+            return NULL;
+        }
+        memcpy(newEntryPoint, fragmentState->entryPoint.data, fragmentState->entryPoint.length);
+        newEntryPoint[fragmentState->entryPoint.length] = '\0';
+        newFragmentState->entryPoint.data = newEntryPoint;
+    }
+
+    if (fragmentState->constantCount > 0 && fragmentState->constants) {
+        WGPUConstantEntry* newConstants = (WGPUConstantEntry*)malloc(sizeof(WGPUConstantEntry) * fragmentState->constantCount);
+        if (!newConstants) {
+            if (newFragmentState->entryPoint.data) free((void*)newFragmentState->entryPoint.data);
+            free(newFragmentState);
+            return NULL;
+        }
+        memcpy(newConstants, fragmentState->constants, sizeof(WGPUConstantEntry) * fragmentState->constantCount);
+        newFragmentState->constants = newConstants;
+    }
+
+    if (fragmentState->targetCount > 0 && fragmentState->targets) {
+        WGPUColorTargetState* newTargets = (WGPUColorTargetState*)malloc(sizeof(WGPUColorTargetState) * fragmentState->targetCount);
+        if (!newTargets) {
+            if (newFragmentState->entryPoint.data) free((void*)newFragmentState->entryPoint.data);
+            if (newFragmentState->constants) free((void*)newFragmentState->constants);
+            free(newFragmentState);
+            return NULL;
+        }
+        memcpy(newTargets, fragmentState->targets, sizeof(WGPUColorTargetState) * fragmentState->targetCount);
+        for (size_t i = 0; i < fragmentState->targetCount; ++i) {
+            if (fragmentState->targets[i].blend) {
+                WGPUBlendState* newBlend = (WGPUBlendState*)malloc(sizeof(WGPUBlendState));
+                if (!newBlend) {
+                    // In a real-world scenario, you would need more robust error handling and cleanup.
+                    free(newTargets);
+                    if (newFragmentState->entryPoint.data) free((void*)newFragmentState->entryPoint.data);
+                    if (newFragmentState->constants) free((void*)newFragmentState->constants);
+                    free(newFragmentState);
+                    return NULL;
+                }
+                memcpy(newBlend, fragmentState->targets[i].blend, sizeof(WGPUBlendState));
+                newTargets[i].blend = newBlend;
+            }
+        }
+        newFragmentState->targets = newTargets;
+    }
+
+    return newFragmentState;
+}
+
+WGPURenderPipelineDescriptor* copyRenderPipelineDescriptor(const WGPURenderPipelineDescriptor* desc) {
+    if (!desc) {
+        return NULL;
+    }
+    WGPURenderPipelineDescriptor* newDesc = (WGPURenderPipelineDescriptor*)RL_CALLOC(1, sizeof(WGPURenderPipelineDescriptor));
+    if (!newDesc) {
+        return NULL;
+    }
+    memcpy(newDesc, desc, sizeof(WGPURenderPipelineDescriptor));
+    if (desc->label.data) {
+        char* newLabel = (char*)RL_MALLOC(desc->label.length + 1);
+        if (!newLabel) {
+            free(newDesc);
+            return NULL;
+        }
+        memcpy(newLabel, desc->label.data, desc->label.length);
+        newLabel[desc->label.length] = '\0';
+        newDesc->label.data = newLabel;
+    }
+    newDesc->vertex = *copyVertexState(&desc->vertex);
+    newDesc->primitive = desc->primitive;
+    if (desc->depthStencil) {
+        newDesc->depthStencil = copyDepthStencilState(desc->depthStencil);
+    }
+    if (desc->fragment) {
+        newDesc->fragment = copyFragmentState(desc->fragment);
+    }
+
+    return newDesc;
+}
+void freeRenderPipelineDescriptor(WGPURenderPipelineDescriptor* desc) {
+    if (!desc) {
+        return;
+    }
+    if (desc->label.data) {
+        RL_FREE((void*)desc->label.data);
+    }
+    if (desc->vertex.entryPoint.data) RL_FREE((void*)desc->vertex.entryPoint.data);
+    if (desc->vertex.constants) RL_FREE((void*)desc->vertex.constants);
+    if (desc->vertex.buffers) {
+        for (size_t i = 0; i < desc->vertex.bufferCount; ++i) {
+            if (desc->vertex.buffers[i].attributes) {
+                RL_FREE((void*)desc->vertex.buffers[i].attributes);
+            }
+        }
+        RL_FREE((void*)desc->vertex.buffers);
+    }
+    if (desc->depthStencil) {
+        RL_FREE((void*)desc->depthStencil);
+    }
+    if (desc->fragment) {
+        if (desc->fragment->entryPoint.data) RL_FREE((void*)desc->fragment->entryPoint.data);
+        if (desc->fragment->constants) RL_FREE((void*)desc->fragment->constants);
+        if (desc->fragment->targets) {
+            for (size_t i = 0; i < desc->fragment->targetCount; ++i) {
+                if (desc->fragment->targets[i].blend) {
+                    RL_FREE((void*)desc->fragment->targets[i].blend);
+                }
+            }
+            RL_FREE((void*)desc->fragment->targets);
+        }
+        RL_FREE((void*)desc->fragment);
+    }
+    RL_FREE(desc);
+}
+
+
+
+static void* wgpuDeviceCreateRenderPipelineAsync_sync(void* _crps){
+    CreateRenderPipelineAsyncState* crps = (CreateRenderPipelineAsyncState*)_crps;
+    crps->renderPipeline = wgpuDeviceCreateRenderPipeline(crps->device, crps->rpdesc);
+    freeRenderPipelineDescriptor(crps->rpdesc);
+    if(crps->renderPipeline){
+        crps->callbackInfo.callback(WGPUCreatePipelineAsyncStatus_Success, crps->renderPipeline, (WGPUStringView){"", 0}, crps->callbackInfo.userdata1, crps->callbackInfo.userdata2);
+    }
+    else{
+        crps->callbackInfo.callback(WGPUCreatePipelineAsyncStatus_InternalError, crps->renderPipeline, (WGPUStringView){"", 0}, crps->callbackInfo.userdata1, crps->callbackInfo.userdata2);
+    }
+    atomic_store_explicit(&crps->completed, 1, memory_order_release);
+    return _crps;
+}
+static void wgpuDeviceCreateRenderPipelineAsync_wait(void* _crps){
+    CreateRenderPipelineAsyncState* crps = (CreateRenderPipelineAsyncState*)_crps;
+    while(atomic_load_explicit(&crps->completed, memory_order_acquire) == 0){
+        volatile int x = 0;
+    }
+}
+
+WGPUFuture wgpuDeviceCreateRenderPipelineAsync(WGPUDevice device, const WGPURenderPipelineDescriptor* descriptor, WGPUCreateRenderPipelineAsyncCallbackInfo callbackInfo) {
+    ENTRY();
+    uint64_t futureID = atomic_fetch_add_explicit(&device->adapter->instance->currentFutureId, 1, memory_order_relaxed);
+    CreateRenderPipelineAsyncState* crps = RL_CALLOC(1, sizeof(CreateRenderPipelineAsyncState));
+    crps->callbackInfo = callbackInfo;
+    crps->completed = 0;
+    crps->device = device;
+    crps->rpdesc = copyRenderPipelineDescriptor(descriptor);
+    if(callbackInfo.mode == WGPUCallbackMode_AllowSpontaneous){
+        wgvk_thread_create(&crps->thread, wgpuDeviceCreateRenderPipelineAsync_sync, (void*)crps);
+    }
+
+    WGPUFutureImpl* futureImpl = RL_CALLOC(1, sizeof(WGPUFutureImpl));
+    futureImpl->freeUserData = RL_FREE;
+
+    futureImpl->functionCalledOnWaitAny = wgpuDeviceCreateRenderPipelineAsync_wait;
+
+
+    EXIT();
+    return (WGPUFuture){ futureID };                                                                                                                                                                              
+}
+void wgpuDeviceDestroy(WGPUDevice device) {
+    ENTRY();
+    EXIT();
 }
 void wgpuDeviceGetFeatures(WGPUDevice device, WGPUSupportedFeatures * features) {
      ENTRY();

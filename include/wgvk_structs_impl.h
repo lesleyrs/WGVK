@@ -1610,7 +1610,7 @@ DEFINE_PTR_HASH_MAP_ERASABLE(static inline, BindGroupCacheMap, DescriptorSetAndP
 //DEFINE_PTR_HASH_MAP(static inline, BindGroupUsageMap, uint32_t)
 //DEFINE_PTR_HASH_MAP(static inline, SamplerUsageMap, uint32_t)
 
-typedef uint32_t refcount_type;
+typedef _Atomic(uint32_t) refcount_type;
 
 typedef struct ResourceUsage{
     BufferUsageRecordMap referencedBuffers;
@@ -1879,19 +1879,21 @@ typedef struct CallbackWithUserdata{
 
 DEFINE_VECTOR(static inline, CallbackWithUserdata, CallbackWithUserdataVector);
 
-typedef enum WGPUFenceState{
+typedef enum WGPUFenceState {
     WGPUFenceState_Reset,
     WGPUFenceState_InUse,
+    WGPUFenceState_Waiting, // A thread is actively waiting on the VkFence
     WGPUFenceState_Finished,
     WGPUFenceState_Force32 = 0x7FFFFFFF,
-}WGPUFenceState;
-typedef struct WGPUFenceImpl{
+} WGPUFenceState;
+
+typedef struct WGPUFenceImpl {
     VkFence fence;
-    WGPUFenceState state;
+    _Atomic(WGPUFenceState) state;
     WGPUDevice device;
     refcount_type refCount;
     CallbackWithUserdataVector callbacksOnWaitComplete;
-}WGPUFenceImpl;
+} WGPUFenceImpl;
 
 typedef struct PendingCommandBufferListRef{
     WGPUFence fence;
@@ -1954,7 +1956,7 @@ typedef struct WGPUBufferImpl{
 }WGPUBufferImpl;
 
 typedef struct WGPURayTracingShaderBindingTableImpl{
-    uint32_t refCount;
+    refcount_type refCount;
     uint32_t shaderGroupCount;
     uint32_t shaderStageCount;
     VkRayTracingShaderGroupCreateInfoKHR* shaderGroups;
@@ -2015,7 +2017,7 @@ typedef struct WGPUInstanceImpl{
     refcount_type refCount;
     VkDebugUtilsMessengerEXT debugMessenger;
 
-    uint64_t currentFutureId;
+    _Atomic(uint64_t) currentFutureId;
     FutureIDMap g_futureIDMap;
 }WGPUInstanceImpl;
 
@@ -2228,7 +2230,7 @@ typedef struct WGPUComputePipelineImpl{
 
 typedef struct WGPURaytracingPipelineImpl{
     VkPipeline raytracingPipeline;
-    uint32_t refCount;
+    refcount_type refCount;
     WGPUPipelineLayout layout;
     WGPUBuffer sbtBuffer;
     VkDeviceSize totalSbtSize;
@@ -2335,7 +2337,7 @@ typedef struct WGPURenderBundleImpl{
     RenderPassCommandGenericVector bufferedCommands;
     DynamicStateCommandBufferMap encodedCommandBuffers;
     WGPUDevice device;
-    uint32_t refCount;
+    refcount_type refCount;
     
     VkFormat* colorAttachmentFormats;
     uint32_t colorAttachmentCount;
@@ -2346,7 +2348,7 @@ typedef struct WGPURenderBundleImpl{
 typedef struct WGPURenderBundleEncoderImpl{
     RenderPassCommandGenericVector bufferedCommands;
     WGPUDevice device;
-    uint32_t refCount;
+    refcount_type refCount;
     uint32_t cacheIndex;
     WGPUBool movedFrom;
     WGPUPipelineLayout lastLayout;
@@ -2361,7 +2363,7 @@ void ComputePassEncoder_PushCommand(WGPUComputePassEncoder, const RenderPassComm
 
 typedef struct WGPUCommandEncoderImpl{
     VkCommandBuffer buffer;
-    uint32_t refCount;
+    refcount_type refCount;
     uint32_t encodedCommandCount;
     WGPURenderPassEncoderSet referencedRPs;
     WGPUComputePassEncoderSet referencedCPs;

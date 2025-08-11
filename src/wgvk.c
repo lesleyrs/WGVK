@@ -7894,181 +7894,415 @@ RGAPI void wgvkAllocator_free(const wgvkAllocation* allocation) {
 // Threads implementation
 // =============================================================================
 
+// wgvk.c
+#define _POSIX_C_SOURCE 200809L
+#include "wgvk.h"
+
 #include <stdlib.h>
-#include <stdint.h>
+#include <errno.h>
+#include <stdatomic.h>
+#include <string.h>
 
-/* Basic Threading */
+#if defined(_WIN32) || defined(_WIN64)
+  #define WGVK_OS_WINDOWS 1
+  #include <windows.h>
+#else
+  #define WGVK_OS_POSIX 1
+  #include <pthread.h>
+  #include <semaphore.h>
+  #include <sched.h>
+  #include <unistd.h>
+#endif
 
-#if defined(_WIN32)
+/* ------------------------ thread implementation ------------------------ */
+
+#if defined(WGVK_OS_WINDOWS)
+
+typedef struct { wgvk_thread_func_t f; void* arg; } wgvk_thread_tramp_t;
+static DWORD WINAPI wgvk_thread_trampoline(LPVOID arg) {
+    wgvk_thread_tramp_t t = *(wgvk_thread_tramp_t*)arg;
+    free(arg);
+    void* r = t.f(t.arg);
+    return (DWORD)(uintptr_t)r;
+}
+
 int wgvk_thread_create(wgvk_thread_t* thread, wgvk_thread_func_t func, void* arg) {
-    thread->handle = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)func, arg, 0, NULL);
-    return thread->handle == NULL ? -1 : 0;
+    if (!thread || !func) { errno = EINVAL; return -1; }
+    wgvk_thread_tramp_t* t = malloc(sizeof(*t));
+    if (!t) { errno = ENOMEM; return -1; }
+    t->f = func; t->arg = arg;
+    thread->handle = CreateThread(NULL, 0, wgvk_thread_trampoline, t, 0, NULL);
+    if (!thread->handle) { free(t); return -1; }
+    return 0;
 }
 
 int wgvk_thread_join(wgvk_thread_t* thread, void** result) {
+    if (!thread || !thread->handle) { errno = EINVAL; return -1; }
     if (WaitForSingleObject(thread->handle, INFINITE) != WAIT_OBJECT_0) return -1;
     if (result) {
-        DWORD exit_code;
-        if (!GetExitCodeThread(thread->handle, &exit_code)) {
-            CloseHandle(thread->handle);
-            return -1;
-        }
-        *result = (void*)(uintptr_t)exit_code;
+        DWORD code;
+        if (!GetExitCodeThread(thread->handle, &code)) return -1;
+        *result = (void*)(uintptr_t)code;
     }
     CloseHandle(thread->handle);
+    thread->handle = NULL;
     return 0;
 }
 
 int wgvk_thread_detach(wgvk_thread_t* thread) {
-    return CloseHandle(thread->handle) ? 0 : -1;
+    if (!thread || !thread->handle) { errno = EINVAL; return -1; }
+    CloseHandle(thread->handle);
+    thread->handle = NULL;
+    return 0;
 }
-#else
+
+#else /* POSIX */
+
 int wgvk_thread_create(wgvk_thread_t* thread, wgvk_thread_func_t func, void* arg) {
-    return pthread_create(&thread->id, NULL, func, arg);
+    if (!thread || !func) { errno = EINVAL; return -1; }
+    int e = pthread_create(&thread->handle, NULL, func, arg);
+    return e ? -1 : 0;
 }
 
 int wgvk_thread_join(wgvk_thread_t* thread, void** result) {
-    return pthread_join(thread->id, result);
+    if (!thread) { errno = EINVAL; return -1; }
+    int e = pthread_join(thread->handle, result);
+    return e ? -1 : 0;
 }
 
 int wgvk_thread_detach(wgvk_thread_t* thread) {
-    return pthread_detach(thread->id);
+    if (!thread) { errno = EINVAL; return -1; }
+    int e = pthread_detach(thread->handle);
+    return e ? -1 : 0;
 }
+
 #endif
 
-/* Mutex */
+/* ------------------------ opaque mutex / cond types ------------------------ */
 
-#if defined(_WIN32)
-int wgvk_mutex_init(wgvk_mutex_t* mutex) {
-    InitializeCriticalSection(&mutex->cs);
-    return 0;
-}
-
-int wgvk_mutex_destroy(wgvk_mutex_t* mutex) {
-    DeleteCriticalSection(&mutex->cs);
-    return 0;
-}
-
-int wgvk_mutex_lock(wgvk_mutex_t* mutex) {
-    EnterCriticalSection(&mutex->cs);
-    return 0;
-}
-
-int wgvk_mutex_unlock(wgvk_mutex_t* mutex) {
-    LeaveCriticalSection(&mutex->cs);
-    return 0;
-}
+/* mutex: kernel (pthread_mutex / CRITICAL_SECTION) OR spin (atomic_flag) */
+struct wgvk_mutex {
+    wgvk_locktype backend;
+#if defined(WGVK_OS_POSIX)
+    union {
+        pthread_mutex_t pm;
+        atomic_flag     spin;
+    } u;
 #else
-int wgvk_mutex_init(wgvk_mutex_t* mutex) {
-    return pthread_mutex_init(&mutex->mutex, NULL);
-}
-
-int wgvk_mutex_destroy(wgvk_mutex_t* mutex) {
-    return pthread_mutex_destroy(&mutex->mutex);
-}
-
-int wgvk_mutex_lock(wgvk_mutex_t* mutex) {
-    return pthread_mutex_lock(&mutex->mutex);
-}
-
-int wgvk_mutex_unlock(wgvk_mutex_t* mutex) {
-    return pthread_mutex_unlock(&mutex->mutex);
-}
+    union {
+        CRITICAL_SECTION cs;
+        atomic_flag      spin;
+    } u;
 #endif
+};
 
-/* Condition Variable */
-
-#if defined(_WIN32)
-int wgvk_cond_init(wgvk_cond_t* cond) {
-    InitializeConditionVariable(&cond->cond);
-    return 0;
-}
-
-int wgvk_cond_destroy(wgvk_cond_t* cond) {
-    (void)cond;
-    return 0;
-}
-
-int wgvk_cond_wait(wgvk_cond_t* cond, wgvk_mutex_t* mutex) {
-    return SleepConditionVariableCS(&cond->cond, &mutex->cs, INFINITE) ? 0 : -1;
-}
-
-int wgvk_cond_signal(wgvk_cond_t* cond) {
-    WakeConditionVariable(&cond->cond);
-    return 0;
-}
-
-int wgvk_cond_broadcast(wgvk_cond_t* cond) {
-    WakeAllConditionVariable(&cond->cond);
-    return 0;
-}
+/* cond: kernel (pthread_cond / CONDITION_VARIABLE) OR spin (semaphore + waiters counter) */
+struct wgvk_cond {
+    wgvk_locktype backend;
+#if defined(WGVK_OS_POSIX)
+    union {
+        pthread_cond_t pc;
+        struct {
+            sem_t       sem;
+            atomic_uint waiters;
+        } s;
+    } u;
 #else
-int wgvk_cond_init(wgvk_cond_t* cond) {
-    return pthread_cond_init(&cond->cond, NULL);
-}
-
-int wgvk_cond_destroy(wgvk_cond_t* cond) {
-    return pthread_cond_destroy(&cond->cond);
-}
-
-int wgvk_cond_wait(wgvk_cond_t* cond, wgvk_mutex_t* mutex) {
-    return pthread_cond_wait(&cond->cond, &mutex->mutex);
-}
-
-int wgvk_cond_signal(wgvk_cond_t* cond) {
-    return pthread_cond_signal(&cond->cond);
-}
-
-int wgvk_cond_broadcast(wgvk_cond_t* cond) {
-    return pthread_cond_broadcast(&cond->cond);
-}
+    union {
+        CONDITION_VARIABLE cv;
+        struct {
+            HANDLE       sem;
+            atomic_uint  waiters;
+        } s;
+    } u;
 #endif
+};
 
-/* Thread Pool */
+/* ------------------------ mutex API ------------------------ */
 
+wgvk_mutex_t* wgvk_mutex_create(wgvk_locktype backend) {
+    wgvk_mutex_t* m = malloc(sizeof(*m));
+    if (!m) { errno = ENOMEM; return NULL; }
+    m->backend = backend;
+#if defined(WGVK_OS_POSIX)
+    if (backend == wgvk_locktype_kernel) {
+        if (pthread_mutex_init(&m->u.pm, NULL) != 0) { free(m); return NULL; }
+    } else {
+        atomic_flag_clear(&m->u.spin);
+    }
+#else /* Windows */
+    if (backend == wgvk_backend_kernel) {
+        /* prefer InitializeCriticalSectionAndSpinCount for better perf */
+        if (!InitializeCriticalSectionAndSpinCount(&m->u.cs, 0x00000400)) {
+            free(m); errno = ENOMEM; return NULL;
+        }
+    } else {
+        atomic_flag_clear(&m->u.spin);
+    }
+#endif
+    return m;
+}
+
+int wgvk_mutex_destroy(wgvk_mutex_t* m) {
+    if (!m) return EINVAL;
+#if defined(WGVK_OS_POSIX)
+    if (m->backend == wgvk_locktype_kernel) {
+        int e = pthread_mutex_destroy(&m->u.pm);
+        free(m);
+        return e;
+    } else {
+        free(m);
+        return 0;
+    }
+#else
+    if (m->backend == wgvk_backend_kernel) {
+        DeleteCriticalSection(&m->u.cs);
+        free(m);
+        return 0;
+    } else {
+        free(m);
+        return 0;
+    }
+#endif
+}
+
+int wgvk_mutex_lock(wgvk_mutex_t* m) {
+    if (!m) return EINVAL;
+#if defined(WGVK_OS_POSIX)
+    if (m->backend == wgvk_locktype_kernel) {
+        return pthread_mutex_lock(&m->u.pm);
+    } else {
+        while (atomic_flag_test_and_set_explicit(&m->u.spin, memory_order_acquire)) {
+            /* polite backoff */
+            sched_yield();
+        }
+        return 0;
+    }
+#else
+    if (m->backend == wgvk_backend_kernel) {
+        EnterCriticalSection(&m->u.cs);
+        return 0;
+    } else {
+        while (atomic_flag_test_and_set_explicit(&m->u.spin, memory_order_acquire)) {
+            Sleep(0);
+        }
+        return 0;
+    }
+#endif
+}
+
+int wgvk_mutex_unlock(wgvk_mutex_t* m) {
+    if (!m) return EINVAL;
+#if defined(WGVK_OS_POSIX)
+    if (m->backend == wgvk_locktype_kernel) {
+        return pthread_mutex_unlock(&m->u.pm);
+    } else {
+        atomic_flag_clear_explicit(&m->u.spin, memory_order_release);
+        return 0;
+    }
+#else
+    if (m->backend == wgvk_backend_kernel) {
+        LeaveCriticalSection(&m->u.cs);
+        return 0;
+    } else {
+        atomic_flag_clear_explicit(&m->u.spin, memory_order_release);
+        return 0;
+    }
+#endif
+}
+
+/* ------------------------ cond API ------------------------ */
+
+wgvk_cond_t* wgvk_cond_create(wgvk_locktype backend) {
+    wgvk_cond_t* c = malloc(sizeof(*c));
+    if (!c) { errno = ENOMEM; return NULL; }
+    c->backend = backend;
+#if defined(WGVK_OS_POSIX)
+    if (backend == wgvk_locktype_kernel) {
+        if (pthread_cond_init(&c->u.pc, NULL) != 0) { free(c); return NULL; }
+    } else {
+        atomic_init(&c->u.s.waiters, 0u);
+        if (sem_init(&c->u.s.sem, 0, 0) != 0) { free(c); return NULL; }
+    }
+#else /* Windows */
+    if (backend == wgvk_backend_kernel) {
+        InitializeConditionVariable(&c->u.cv);
+    } else {
+        atomic_init(&c->u.s.waiters, 0u);
+        c->u.s.sem = CreateSemaphoreW(NULL, 0, LONG_MAX, NULL);
+        if (!c->u.s.sem) { free(c); return NULL; }
+    }
+#endif
+    return c;
+}
+
+int wgvk_cond_destroy(wgvk_cond_t* c) {
+    if (!c) return EINVAL;
+#if defined(WGVK_OS_POSIX)
+    if (c->backend == wgvk_locktype_kernel) {
+        int e = pthread_cond_destroy(&c->u.pc);
+        free(c);
+        return e;
+    } else {
+        int e = sem_destroy(&c->u.s.sem);
+        free(c);
+        return e;
+    }
+#else
+    if (c->backend == wgvk_backend_kernel) {
+        /* no destroy */
+        free(c);
+        return 0;
+    } else {
+        if (!CloseHandle(c->u.s.sem)) {
+            int e = (int)GetLastError();
+            free(c);
+            return e;
+        }
+        free(c);
+        return 0;
+    }
+#endif
+}
+
+/* Wait: caller must hold m. On return caller holds m again.
+   For kernel backend: m must be a kernel mutex created with backend kernel.
+   For spin backend: m must be a spin mutex created with backend spin.
+*/
+int wgvk_cond_wait(wgvk_cond_t* c, wgvk_mutex_t* m) {
+    if (!c || !m) return EINVAL;
+    if (c->backend == wgvk_locktype_kernel) {
+#if defined(WGVK_OS_POSIX)
+        if (m->backend != wgvk_locktype_kernel) return EINVAL;
+        return pthread_cond_wait(&c->u.pc, &m->u.pm);
+#else
+        if (m->backend != wgvk_backend_kernel) return EINVAL;
+        BOOL ok = SleepConditionVariableCS(&c->u.cv, &m->u.cs, INFINITE);
+        return ok ? 0 : -1;
+#endif
+    } else {
+        /* spin backend: use semaphore parking */
+        if (m->backend != wgvk_locktype_spin) return EINVAL;
+#if defined(WGVK_OS_POSIX)
+        atomic_fetch_add_explicit(&c->u.s.waiters, 1u, memory_order_acq_rel);
+        /* release spinlock */
+        atomic_flag_clear_explicit(&m->u.spin, memory_order_release);
+        int s;
+        do { s = sem_wait(&c->u.s.sem); } while (s == -1 && errno == EINTR);
+        atomic_fetch_sub_explicit(&c->u.s.waiters, 1u, memory_order_acq_rel);
+        /* reacquire spinlock */
+        while (atomic_flag_test_and_set_explicit(&m->u.spin, memory_order_acquire)) sched_yield();
+        return 0;
+#else
+        atomic_fetch_add_explicit(&c->u.s.waiters, 1u, memory_order_acq_rel);
+        atomic_flag_clear_explicit(&m->u.spin, memory_order_release);
+        DWORD r = WaitForSingleObject(c->u.s.sem, INFINITE);
+        (void)r; /* ignore WAIT_FAILED for compactness */
+        atomic_fetch_sub_explicit(&c->u.s.waiters, 1u, memory_order_acq_rel);
+        while (atomic_flag_test_and_set_explicit(&m->u.spin, memory_order_acquire)) Sleep(0);
+        return 0;
+#endif
+    }
+}
+
+int wgvk_cond_signal(wgvk_cond_t* c) {
+    if (!c) return EINVAL;
+    if (c->backend == wgvk_locktype_kernel) {
+#if defined(WGVK_OS_POSIX)
+        return pthread_cond_signal(&c->u.pc);
+#else
+        WakeConditionVariable(&c->u.cv);
+        return 0;
+#endif
+    } else {
+#if defined(WGVK_OS_POSIX)
+        unsigned int w = atomic_load_explicit(&c->u.s.waiters, memory_order_acquire);
+        if (w > 0) sem_post(&c->u.s.sem);
+        return 0;
+#else
+        unsigned int w = atomic_load_explicit(&c->u.s.waiters, memory_order_acquire);
+        if (w > 0) ReleaseSemaphore(c->u.s.sem, 1, NULL);
+        return 0;
+#endif
+    }
+}
+
+int wgvk_cond_broadcast(wgvk_cond_t* c) {
+    if (!c) return EINVAL;
+    if (c->backend == wgvk_locktype_kernel) {
+#if defined(WGVK_OS_POSIX)
+        return pthread_cond_broadcast(&c->u.pc);
+#else
+        WakeAllConditionVariable(&c->u.cv);
+        return 0;
+#endif
+    } else {
+#if defined(WGVK_OS_POSIX)
+        unsigned int w = atomic_exchange_explicit(&c->u.s.waiters, 0u, memory_order_acq_rel);
+        for (unsigned int i = 0; i < w; ++i) sem_post(&c->u.s.sem);
+        return 0;
+#else
+        unsigned int w = atomic_exchange_explicit(&c->u.s.waiters, 0u, memory_order_acq_rel);
+        if (w > 0) ReleaseSemaphore(c->u.s.sem, (LONG)w, NULL);
+        return 0;
+#endif
+    }
+}
+
+/* ------------------------ thread-pool (uses kernel primitives) ------------------------ */
+
+/* worker */
 static void* wgvk_thread_pool_worker(void* arg) {
     wgvk_thread_pool_t* pool = (wgvk_thread_pool_t*)arg;
     while (1) {
-        wgvk_mutex_lock(&pool->queue_mutex);
+        wgvk_mutex_lock(pool->queue_mutex);
         while (pool->head == NULL && !pool->stop) {
-            wgvk_cond_wait(&pool->queue_cond, &pool->queue_mutex);
+            wgvk_cond_wait(pool->queue_cond, pool->queue_mutex);
         }
         if (pool->stop && pool->head == NULL) {
-            wgvk_mutex_unlock(&pool->queue_mutex);
+            wgvk_mutex_unlock(pool->queue_mutex);
             break;
         }
         wgvk_job_t* job = pool->head;
         pool->head = pool->head->next;
         if (pool->head == NULL) pool->tail = NULL;
-        wgvk_mutex_unlock(&pool->queue_mutex);
+        wgvk_mutex_unlock(pool->queue_mutex);
 
-        wgvk_mutex_lock(&job->status_mutex);
+        /* update status and run */
+        wgvk_mutex_lock(job->status_mutex);
         job->status = WGVK_JOB_RUNNING;
-        wgvk_mutex_unlock(&job->status_mutex);
+        wgvk_mutex_unlock(job->status_mutex);
 
         job->result = job->func(job->arg);
 
-        wgvk_mutex_lock(&job->status_mutex);
+        wgvk_mutex_lock(job->status_mutex);
         job->status = WGVK_JOB_COMPLETED;
-        wgvk_cond_signal(&job->status_cond);
-        wgvk_mutex_unlock(&job->status_mutex);
+        wgvk_cond_signal(job->status_cond);
+        wgvk_mutex_unlock(job->status_mutex);
     }
     return NULL;
 }
 
 wgvk_thread_pool_t* wgvk_thread_pool_create(size_t num_threads) {
-    wgvk_thread_pool_t* pool = (wgvk_thread_pool_t*)malloc(sizeof(wgvk_thread_pool_t));
-    if (!pool) return NULL;
+    if (num_threads == 0) num_threads = 1;
+    wgvk_thread_pool_t* pool = malloc(sizeof(*pool));
+    if (!pool) { errno = ENOMEM; return NULL; }
     pool->num_threads = num_threads;
-    pool->workers = (wgvk_thread_t*)malloc(sizeof(wgvk_thread_t) * num_threads);
+    pool->workers = calloc(num_threads, sizeof(wgvk_thread_t));
     if (!pool->workers) { free(pool); return NULL; }
 
-    pool->head = NULL;
-    pool->tail = NULL;
+    pool->head = pool->tail = NULL;
     pool->stop = 0;
 
-    wgvk_mutex_init(&pool->queue_mutex);
-    wgvk_cond_init(&pool->queue_cond);
+    /* queue sync: always kernel-backed to avoid spinlock parking complexity */
+    pool->queue_mutex = wgvk_mutex_create(wgvk_locktype_kernel);
+    pool->queue_cond  = wgvk_cond_create(wgvk_locktype_kernel);
+    if (!pool->queue_mutex || !pool->queue_cond) {
+        if (pool->queue_mutex) wgvk_mutex_destroy(pool->queue_mutex);
+        if (pool->queue_cond)  wgvk_cond_destroy(pool->queue_cond);
+        free(pool->workers); free(pool);
+        return NULL;
+    }
 
     for (size_t i = 0; i < num_threads; ++i) {
         wgvk_thread_create(&pool->workers[i], wgvk_thread_pool_worker, pool);
@@ -8077,71 +8311,74 @@ wgvk_thread_pool_t* wgvk_thread_pool_create(size_t num_threads) {
 }
 
 void wgvk_thread_pool_destroy(wgvk_thread_pool_t* pool) {
-    wgvk_mutex_lock(&pool->queue_mutex);
+    if (!pool) return;
+    wgvk_mutex_lock(pool->queue_mutex);
     pool->stop = 1;
-    wgvk_cond_broadcast(&pool->queue_cond);
-    wgvk_mutex_unlock(&pool->queue_mutex);
+    wgvk_cond_broadcast(pool->queue_cond);
+    wgvk_mutex_unlock(pool->queue_mutex);
 
     for (size_t i = 0; i < pool->num_threads; ++i) {
         wgvk_thread_join(&pool->workers[i], NULL);
     }
 
     while (pool->head) {
-        wgvk_job_t* temp = pool->head;
+        wgvk_job_t* tmp = pool->head;
         pool->head = pool->head->next;
-        wgvk_job_destroy(temp);
+        wgvk_job_destroy(tmp);
     }
 
-    wgvk_mutex_destroy(&pool->queue_mutex);
-    wgvk_cond_destroy(&pool->queue_cond);
+    wgvk_mutex_destroy(pool->queue_mutex);
+    wgvk_cond_destroy(pool->queue_cond);
     free(pool->workers);
     free(pool);
 }
 
 wgvk_job_t* wgvk_job_enqueue(wgvk_thread_pool_t* pool, wgvk_thread_func_t func, void* arg) {
-    wgvk_job_t* job = (wgvk_job_t*)malloc(sizeof(wgvk_job_t));
-    if (!job) return NULL;
-
+    if (!pool || !func) { errno = EINVAL; return NULL; }
+    wgvk_job_t* job = malloc(sizeof(*job));
+    if (!job) { errno = ENOMEM; return NULL; }
     job->func = func;
     job->arg = arg;
     job->result = NULL;
     job->status = WGVK_JOB_PENDING;
     job->next = NULL;
-    wgvk_mutex_init(&job->status_mutex);
-    wgvk_cond_init(&job->status_cond);
-    
-    wgvk_mutex_lock(&pool->queue_mutex);
-    if (pool->tail) {
-        pool->tail->next = job;
-    } else {
-        pool->head = job;
+    /* per-job sync use kernel primitives */
+    job->status_mutex = wgvk_mutex_create(wgvk_locktype_kernel);
+    job->status_cond  = wgvk_cond_create(wgvk_locktype_kernel);
+    if (!job->status_mutex || !job->status_cond) {
+        if (job->status_mutex) wgvk_mutex_destroy(job->status_mutex);
+        if (job->status_cond)  wgvk_cond_destroy(job->status_cond);
+        free(job);
+        return NULL;
     }
+
+    wgvk_mutex_lock(pool->queue_mutex);
+    if (pool->tail) pool->tail->next = job;
+    else pool->head = job;
     pool->tail = job;
-    wgvk_cond_signal(&pool->queue_cond);
-    wgvk_mutex_unlock(&pool->queue_mutex);
+    wgvk_cond_signal(pool->queue_cond);
+    wgvk_mutex_unlock(pool->queue_mutex);
 
     return job;
 }
 
 int wgvk_job_wait(wgvk_job_t* job, void** result) {
-    wgvk_mutex_lock(&job->status_mutex);
+    if (!job) return EINVAL;
+    wgvk_mutex_lock(job->status_mutex);
     while (job->status != WGVK_JOB_COMPLETED) {
-        wgvk_cond_wait(&job->status_cond, &job->status_mutex);
+        wgvk_cond_wait(job->status_cond, job->status_mutex);
     }
-    if (result) {
-        *result = job->result;
-    }
-    wgvk_mutex_unlock(&job->status_mutex);
+    if (result) *result = job->result;
+    wgvk_mutex_unlock(job->status_mutex);
     return 0;
 }
 
 void wgvk_job_destroy(wgvk_job_t* job) {
     if (!job) return;
-    wgvk_mutex_destroy(&job->status_mutex);
-    wgvk_cond_destroy(&job->status_cond);
+    wgvk_mutex_destroy(job->status_mutex);
+    wgvk_cond_destroy(job->status_cond);
     free(job);
 }
-
 
 
 

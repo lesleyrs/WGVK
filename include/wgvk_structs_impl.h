@@ -6,6 +6,11 @@
 #include <external/VmaUsage.h>
 #include <wgvk_config.h>
 #include <stdbool.h>
+#ifdef __cplusplus
+    #include <atomic>
+#else
+    #include <stdatomic.h>
+#endif
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1603,7 +1608,13 @@ DEFINE_PTR_HASH_MAP_ERASABLE(static inline, BindGroupCacheMap, DescriptorSetAndP
 //DEFINE_PTR_HASH_MAP(static inline, BindGroupUsageMap, uint32_t)
 //DEFINE_PTR_HASH_MAP(static inline, SamplerUsageMap, uint32_t)
 
-typedef _Atomic(uint32_t) refcount_type;
+#ifdef __cplusplus
+    #define Atomar(X) std::atomic<X>
+#else
+    #define Atomar(X) _Atomic(X)
+#endif
+
+typedef Atomar(uint32_t) refcount_type;
 
 typedef struct ResourceUsage{
     BufferUsageRecordMap referencedBuffers;
@@ -1882,7 +1893,7 @@ typedef enum WGPUFenceState {
 
 typedef struct WGPUFenceImpl {
     VkFence fence;
-    _Atomic(WGPUFenceState) state;
+    Atomar(WGPUFenceState) state;
     WGPUDevice device;
     refcount_type refCount;
     CallbackWithUserdataVector callbacksOnWaitComplete;
@@ -2010,7 +2021,7 @@ typedef struct WGPUInstanceImpl{
     refcount_type refCount;
     VkDebugUtilsMessengerEXT debugMessenger;
 
-    _Atomic(uint64_t) currentFutureId;
+    Atomar(uint64_t) currentFutureId;
     FutureIDMap g_futureIDMap;
 }WGPUInstanceImpl;
 

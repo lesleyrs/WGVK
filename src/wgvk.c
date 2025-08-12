@@ -6983,15 +6983,10 @@ typedef struct CreateRenderPipelineAsyncState{
     WGPUDevice device;
     WGPURenderPipelineDescriptor* rpdesc;
     WGPUCreateRenderPipelineAsyncCallbackInfo callbackInfo;
-    _Atomic WGPURenderPipeline renderPipeline;
-    _Atomic uint32_t completed;
+    Atomar(WGPURenderPipeline) renderPipeline;
+    Atomar(uint32_t) completed;
 }CreateRenderPipelineAsyncState;
 
-
-#include <stdlib.h>
-#include <string.h>
-
-// Forward declaration for recursive calls
 static WGPURenderPipelineDescriptor* copyRenderPipelineDescriptor(const WGPURenderPipelineDescriptor* desc);
 
 static WGPUVertexState* copyVertexState(const WGPUVertexState* vertexState) {
@@ -7008,7 +7003,7 @@ static WGPUVertexState* copyVertexState(const WGPUVertexState* vertexState) {
     if (vertexState->entryPoint.data) {
         char* newEntryPoint = (char*)RL_MALLOC(vertexState->entryPoint.length + 1);
         if (!newEntryPoint) {
-            free(newVertexState);
+            RL_FREE(newVertexState);
             return NULL;
         }
         memcpy(newEntryPoint, vertexState->entryPoint.data, vertexState->entryPoint.length);
@@ -7019,8 +7014,8 @@ static WGPUVertexState* copyVertexState(const WGPUVertexState* vertexState) {
     if (vertexState->constantCount > 0 && vertexState->constants) {
         WGPUConstantEntry* newConstants = (WGPUConstantEntry*)RL_MALLOC(sizeof(WGPUConstantEntry) * vertexState->constantCount);
         if (!newConstants) {
-            if (newVertexState->entryPoint.data) free((void*)newVertexState->entryPoint.data);
-            free(newVertexState);
+            if (newVertexState->entryPoint.data) RL_FREE((void*)newVertexState->entryPoint.data);
+            RL_FREE(newVertexState);
             return NULL;
         }
         memcpy(newConstants, vertexState->constants, sizeof(WGPUConstantEntry) * vertexState->constantCount);
@@ -7030,9 +7025,9 @@ static WGPUVertexState* copyVertexState(const WGPUVertexState* vertexState) {
     if (vertexState->bufferCount > 0 && vertexState->buffers) {
         WGPUVertexBufferLayout* newBuffers = (WGPUVertexBufferLayout*)RL_MALLOC(sizeof(WGPUVertexBufferLayout) * vertexState->bufferCount);
         if (!newBuffers) {
-            if (newVertexState->entryPoint.data) free((void*)newVertexState->entryPoint.data);
-            if (newVertexState->constants) free((void*)newVertexState->constants);
-            free(newVertexState);
+            if (newVertexState->entryPoint.data) RL_FREE((void*)newVertexState->entryPoint.data);
+            if (newVertexState->constants) RL_FREE((void*)newVertexState->constants);
+            RL_FREE(newVertexState);
             return NULL;
         }
         for (size_t i = 0; i < vertexState->bufferCount; ++i) {
@@ -7042,12 +7037,12 @@ static WGPUVertexState* copyVertexState(const WGPUVertexState* vertexState) {
                 if (!newAttributes) {
                     // Cleanup allocated memory
                     for (size_t j = 0; j < i; ++j) {
-                        if (newBuffers[j].attributes) free((void*)newBuffers[j].attributes);
+                        if (newBuffers[j].attributes) RL_FREE((void*)newBuffers[j].attributes);
                     }
-                    free(newBuffers);
-                    if (newVertexState->entryPoint.data) free((void*)newVertexState->entryPoint.data);
-                    if (newVertexState->constants) free((void*)newVertexState->constants);
-                    free(newVertexState);
+                    RL_FREE(newBuffers);
+                    if (newVertexState->entryPoint.data) RL_FREE((void*)newVertexState->entryPoint.data);
+                    if (newVertexState->constants) RL_FREE((void*)newVertexState->constants);
+                    RL_FREE(newVertexState);
                     return NULL;
                 }
                 memcpy(newAttributes, vertexState->buffers[i].attributes, sizeof(WGPUVertexAttribute) * vertexState->buffers[i].attributeCount);
@@ -7065,7 +7060,7 @@ WGPUDepthStencilState* copyDepthStencilState(const WGPUDepthStencilState* depthS
         return NULL;
     }
 
-    WGPUDepthStencilState* newDepthStencilState = (WGPUDepthStencilState*)malloc(sizeof(WGPUDepthStencilState));
+    WGPUDepthStencilState* newDepthStencilState = (WGPUDepthStencilState*)RL_MALLOC(sizeof(WGPUDepthStencilState));
     if (!newDepthStencilState) {
         return NULL;
     }
@@ -7078,16 +7073,16 @@ WGPUFragmentState* copyFragmentState(const WGPUFragmentState* fragmentState) {
         return NULL;
     }
 
-    WGPUFragmentState* newFragmentState = (WGPUFragmentState*)malloc(sizeof(WGPUFragmentState));
+    WGPUFragmentState* newFragmentState = (WGPUFragmentState*)RL_MALLOC(sizeof(WGPUFragmentState));
     if (!newFragmentState) {
         return NULL;
     }
     memcpy(newFragmentState, fragmentState, sizeof(WGPUFragmentState));
 
     if (fragmentState->entryPoint.data) {
-        char* newEntryPoint = (char*)malloc(fragmentState->entryPoint.length + 1);
+        char* newEntryPoint = (char*)RL_MALLOC(fragmentState->entryPoint.length + 1);
         if (!newEntryPoint) {
-            free(newFragmentState);
+            RL_FREE(newFragmentState);
             return NULL;
         }
         memcpy(newEntryPoint, fragmentState->entryPoint.data, fragmentState->entryPoint.length);
@@ -7096,10 +7091,10 @@ WGPUFragmentState* copyFragmentState(const WGPUFragmentState* fragmentState) {
     }
 
     if (fragmentState->constantCount > 0 && fragmentState->constants) {
-        WGPUConstantEntry* newConstants = (WGPUConstantEntry*)malloc(sizeof(WGPUConstantEntry) * fragmentState->constantCount);
+        WGPUConstantEntry* newConstants = (WGPUConstantEntry*)RL_MALLOC(sizeof(WGPUConstantEntry) * fragmentState->constantCount);
         if (!newConstants) {
-            if (newFragmentState->entryPoint.data) free((void*)newFragmentState->entryPoint.data);
-            free(newFragmentState);
+            if (newFragmentState->entryPoint.data) RL_FREE((void*)newFragmentState->entryPoint.data);
+            RL_FREE(newFragmentState);
             return NULL;
         }
         memcpy(newConstants, fragmentState->constants, sizeof(WGPUConstantEntry) * fragmentState->constantCount);
@@ -7107,23 +7102,23 @@ WGPUFragmentState* copyFragmentState(const WGPUFragmentState* fragmentState) {
     }
 
     if (fragmentState->targetCount > 0 && fragmentState->targets) {
-        WGPUColorTargetState* newTargets = (WGPUColorTargetState*)malloc(sizeof(WGPUColorTargetState) * fragmentState->targetCount);
+        WGPUColorTargetState* newTargets = (WGPUColorTargetState*)RL_MALLOC(sizeof(WGPUColorTargetState) * fragmentState->targetCount);
         if (!newTargets) {
-            if (newFragmentState->entryPoint.data) free((void*)newFragmentState->entryPoint.data);
-            if (newFragmentState->constants) free((void*)newFragmentState->constants);
-            free(newFragmentState);
+            if (newFragmentState->entryPoint.data) RL_FREE((void*)newFragmentState->entryPoint.data);
+            if (newFragmentState->constants) RL_FREE((void*)newFragmentState->constants);
+            RL_FREE(newFragmentState);
             return NULL;
         }
         memcpy(newTargets, fragmentState->targets, sizeof(WGPUColorTargetState) * fragmentState->targetCount);
         for (size_t i = 0; i < fragmentState->targetCount; ++i) {
             if (fragmentState->targets[i].blend) {
-                WGPUBlendState* newBlend = (WGPUBlendState*)malloc(sizeof(WGPUBlendState));
+                WGPUBlendState* newBlend = (WGPUBlendState*)RL_MALLOC(sizeof(WGPUBlendState));
                 if (!newBlend) {
                     // In a real-world scenario, you would need more robust error handling and cleanup.
-                    free(newTargets);
-                    if (newFragmentState->entryPoint.data) free((void*)newFragmentState->entryPoint.data);
-                    if (newFragmentState->constants) free((void*)newFragmentState->constants);
-                    free(newFragmentState);
+                    RL_FREE(newTargets);
+                    if (newFragmentState->entryPoint.data) RL_FREE((void*)newFragmentState->entryPoint.data);
+                    if (newFragmentState->constants) RL_FREE((void*)newFragmentState->constants);
+                    RL_FREE(newFragmentState);
                     return NULL;
                 }
                 memcpy(newBlend, fragmentState->targets[i].blend, sizeof(WGPUBlendState));
@@ -7148,7 +7143,7 @@ WGPURenderPipelineDescriptor* copyRenderPipelineDescriptor(const WGPURenderPipel
     if (desc->label.data) {
         char* newLabel = (char*)RL_MALLOC(desc->label.length + 1);
         if (!newLabel) {
-            free(newDesc);
+            RL_FREE(newDesc);
             return NULL;
         }
         memcpy(newLabel, desc->label.data, desc->label.length);
@@ -7208,19 +7203,29 @@ static void* wgpuDeviceCreateRenderPipelineAsync_sync(void* _crps){
     CreateRenderPipelineAsyncState* crps = (CreateRenderPipelineAsyncState*)_crps;
     crps->renderPipeline = wgpuDeviceCreateRenderPipeline(crps->device, crps->rpdesc);
     freeRenderPipelineDescriptor(crps->rpdesc);
-    if(crps->renderPipeline){
-        crps->callbackInfo.callback(WGPUCreatePipelineAsyncStatus_Success, crps->renderPipeline, (WGPUStringView){"", 0}, crps->callbackInfo.userdata1, crps->callbackInfo.userdata2);
-    }
-    else{
-        crps->callbackInfo.callback(WGPUCreatePipelineAsyncStatus_InternalError, crps->renderPipeline, (WGPUStringView){"", 0}, crps->callbackInfo.userdata1, crps->callbackInfo.userdata2);
+    if(crps->callbackInfo.mode == WGPUCallbackMode_AllowSpontaneous){
+        if(crps->renderPipeline){
+            crps->callbackInfo.callback(WGPUCreatePipelineAsyncStatus_Success, crps->renderPipeline, (WGPUStringView){"", 0}, crps->callbackInfo.userdata1, crps->callbackInfo.userdata2);
+        }
+        else{
+            crps->callbackInfo.callback(WGPUCreatePipelineAsyncStatus_InternalError, crps->renderPipeline, (WGPUStringView){"", 0}, crps->callbackInfo.userdata1, crps->callbackInfo.userdata2);
+        }
     }
     atomic_store_explicit(&crps->completed, 1, memory_order_release);
     return _crps;
 }
 static void wgpuDeviceCreateRenderPipelineAsync_wait(void* _crps){
     CreateRenderPipelineAsyncState* crps = (CreateRenderPipelineAsyncState*)_crps;
-    while(atomic_load_explicit(&crps->completed, memory_order_acquire) == 0){
+    do{
         volatile int x = 0;
+    }while(atomic_load_explicit(&crps->completed, memory_order_acquire) == 0);
+    if(crps->callbackInfo.mode == WGPUCallbackMode_WaitAnyOnly){
+        if(crps->renderPipeline){
+            crps->callbackInfo.callback(WGPUCreatePipelineAsyncStatus_Success, crps->renderPipeline, (WGPUStringView){"", 0}, crps->callbackInfo.userdata1, crps->callbackInfo.userdata2);
+        }
+        else{
+            crps->callbackInfo.callback(WGPUCreatePipelineAsyncStatus_InternalError, crps->renderPipeline, (WGPUStringView){"", 0}, crps->callbackInfo.userdata1, crps->callbackInfo.userdata2);
+        }
     }
 }
 

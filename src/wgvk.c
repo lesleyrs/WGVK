@@ -7286,97 +7286,107 @@ void wgpuDeviceSetLabel(WGPUDevice device, WGPUStringView label) {
 WGPUStatus wgpuInstanceGetWGSLLanguageFeatures(WGPUInstance instance, WGPUSupportedWGSLLanguageFeatures * features) {                                                                                                                       ENTRY();
 return WGPUStatus_Error;                                                                                                                       EXIT();
                                                                                                                                                 }
-WGPUBool wgpuInstanceHasWGSLLanguageFeature(WGPUInstance instance, WGPUWGSLLanguageFeatureName feature) {                                                                                                           ENTRY();
-return 0;                                                                                                           EXIT();
-                                                                                                                     }
+WGPUBool wgpuInstanceHasWGSLLanguageFeature(WGPUInstance instance, WGPUWGSLLanguageFeatureName feature) {
+    ENTRY();
+    EXIT();
+    return 0;
+}
 void wgpuInstanceProcessEvents(WGPUInstance instance) {
-     ENTRY();
-
-     EXIT();
+    ENTRY()
+    EXIT();
 }
 
 // Stubs for missing Methods of PipelineLayout
 void wgpuPipelineLayoutSetLabel(WGPUPipelineLayout pipelineLayout, WGPUStringView label) {
-     ENTRY();
-
-     EXIT();
+    ENTRY();
+    EXIT();
 }
 
 // Stubs for missing Methods of QuerySet
 void wgpuQuerySetDestroy(WGPUQuerySet querySet) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
-uint32_t wgpuQuerySetGetCount(WGPUQuerySet querySet) {                                                        ENTRY();
-return 0;                                                        EXIT();
-                                                                  }
+uint32_t wgpuQuerySetGetCount(WGPUQuerySet querySet) {
+    ENTRY();
+    EXIT();
+    return 0;
+}
 WGPUQueryType wgpuQuerySetGetType(WGPUQuerySet querySet) {                                                            ENTRY();
 return querySet->type;                                                            EXIT();
                                                                                    }
 void wgpuQuerySetSetLabel(WGPUQuerySet querySet, WGPUStringView label) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
 void wgpuQuerySetAddRef(WGPUQuerySet querySet) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
 void wgpuQuerySetRelease(WGPUQuerySet querySet) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
 
-// Stubs for missing Methods of Queue
-WGPUFuture wgpuQueueOnSubmittedWorkDone(WGPUQueue queue, WGPUQueueWorkDoneCallbackInfo callbackInfo) {                                                                                                        ENTRY();
-return (WGPUFuture){0};                                                                                                        EXIT();
-                                                                                                                                }
-void wgpuQueueSetLabel(WGPUQueue queue, WGPUStringView label) {
-     ENTRY();
 
-     EXIT();
+typedef struct QueueOnSubmittedWorkDoneState{
+    WGPUQueueWorkDoneCallbackInfo callbackInfo;
+
+}QueueOnSubmittedWorkDoneState;
+
+WGPUFuture wgpuQueueOnSubmittedWorkDone(WGPUQueue queue, WGPUQueueWorkDoneCallbackInfo callbackInfo) {
+    ENTRY();
+        wgpuFenceWait;
+    EXIT();
+    return (WGPUFuture){0};
+}
+void wgpuQueueSetLabel(WGPUQueue queue, WGPUStringView label) {
+    ENTRY();
+
+    EXIT();
 }
 
 // Stubs for missing Methods of RenderBundle
 void wgpuRenderBundleSetLabel(WGPURenderBundle renderBundle, WGPUStringView label) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
 void wgpuRenderBundleAddRef(WGPURenderBundle renderBundle) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
 void wgpuRenderBundleRelease(WGPURenderBundle renderBundle) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
 
 // Stubs for missing Methods of RenderBundleEncoder
 void wgpuRenderBundleEncoderInsertDebugMarker(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView markerLabel) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
 void wgpuRenderBundleEncoderPopDebugGroup(WGPURenderBundleEncoder renderBundleEncoder) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
 void wgpuRenderBundleEncoderPushDebugGroup(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView groupLabel) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
 void wgpuRenderBundleEncoderSetLabel(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView label) {
-     ENTRY();
+    ENTRY();
 
-     EXIT();
+    EXIT();
 }
 
 // Stubs for missing Methods of RenderPassEncoder

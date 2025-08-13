@@ -1059,6 +1059,7 @@ typedef struct WGPUInstanceCapabilities {
     WGPUBool timedWaitAnyEnable;
     size_t timedWaitAnyMaxCount;
 } WGPUInstanceCapabilities;
+
 typedef struct WGPUInstanceLayerSelection{
     WGPUChainedStruct chain;
     const char* const* instanceLayers;

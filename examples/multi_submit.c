@@ -370,7 +370,6 @@ int main(){
     //wgpuCommandEncoderCopyBufferToBuffer(cenc, buffer1, 0, readableBuffer, 0, 64);
     WGPUCommandBuffer cmdBuffer = wgpuCommandEncoderFinish(cenc, NULL);
     wgpuCommandEncoderRelease(cenc);
-    wgpuQueueOnSubmittedWorkDone;
     WGPUCommandEncoder cenc2 = wgpuDeviceCreateCommandEncoder(device, NULL);
     WGPUComputePassEncoder cpenc2 = wgpuCommandEncoderBeginComputePass(cenc2, NULL);
     wgpuComputePassEncoderSetPipeline(cpenc2, rpl);

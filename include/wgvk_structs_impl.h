@@ -131,6 +131,7 @@ typedef struct wgvk_cond  wgvk_cond_t;
 wgvk_mutex_t* wgvk_mutex_create(wgvk_locktype backend);
 int           wgvk_mutex_destroy(wgvk_mutex_t* m);
 int           wgvk_mutex_lock(wgvk_mutex_t* m);
+int           wgvk_mutex_try_lock(wgvk_mutex_t* m);
 int           wgvk_mutex_unlock(wgvk_mutex_t* m);
 
 wgvk_cond_t*  wgvk_cond_create(wgvk_locktype backend);

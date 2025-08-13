@@ -399,7 +399,14 @@ WGPUStatus wgpuAdapterGetLimits(WGPUAdapter adapter, WGPULimits* limits) WGPU_FU
     return WGPUStatus_Success;
     EXIT();
 }
-
+typedef struct FenceInFrameCacheCallbackUserdata{
+    WGPUFence fence;
+    PerframeCache* frameCache;
+}FenceInFrameCacheCallbackUserdata;
+void fenceFreeCallback(void* userdata_){
+    FenceInFrameCacheCallbackUserdata* userdata = (FenceInFrameCacheCallbackUserdata*)userdata_;
+    WGPUCommandBufferVector* insert = PendingCommandBufferMap_get(&userdata->frameCache->pendingCommandBuffers, userdata->fence);
+}
 void PerframeCache_pushFenceDependencies(PerframeCache* pfcache, WGPUFence fence, WGPUCommandBufferVector* commandBuffers){
     PendingCommandBufferMap* map = &pfcache->pendingCommandBuffers;
 
@@ -413,6 +420,13 @@ void PerframeCache_pushFenceDependencies(PerframeCache* pfcache, WGPUFence fence
     }
     else{
         PendingCommandBufferMap_put(map, fence, *commandBuffers);
+        FenceInFrameCacheCallbackUserdata* userdata = RL_CALLOC(1, sizeof(FenceInFrameCacheCallbackUserdata));
+        CallbackWithUserdata cwu = {
+            .callback = fenceFreeCallback,
+            .freeUserData = RL_FREE,
+            .userdata = userdata,
+        };
+        CallbackWithUserdataVector_push_back(&fence->callbacksOnWaitComplete, cwu);
     }
 }
 
@@ -8148,6 +8162,41 @@ int wgvk_mutex_lock(wgvk_mutex_t* m) {
     } else {
         while (atomic_flag_test_and_set_explicit(&m->u.spin, memory_order_acquire)) {
             Sleep(0);
+        }
+        return 0;
+    }
+#endif
+}
+
+int wgvk_mutex_try_lock(wgvk_mutex_t* m) {
+    if (!m) {
+        return EINVAL;
+    }
+
+#if defined(WGVK_OS_POSIX)
+    if (m->backend == wgvk_locktype_kernel) {
+        // pthread_mutex_trylock returns 0 on success, or an error code (like EBUSY) on failure
+        return pthread_mutex_trylock(&m->u.pm);
+    } else {
+        // atomic_flag_test_and_set returns the *previous* state.
+        // If false (clear), we acquired the lock. If true (set), it was already locked
+        if (atomic_flag_test_and_set_explicit(&m->u.spin, memory_order_acquire)) {
+            return EBUSY;
+        }
+        return 0;
+    }
+#else /* Windows */
+    if (m->backend == wgvk_backend_kernel) {
+        // TryEnterCriticalSection returns a non-zero value on success and 0 on failure.
+        if (TryEnterCriticalSection(&m->u.cs)) {
+            return 0; // Success
+        } else {
+            return EBUSY; // Return a POSIX-style error code for "busy"
+        }
+    } else {
+        // The logic for the atomic spinlock is the same as on POSIX.
+        if (atomic_flag_test_and_set_explicit(&m->u.spin, memory_order_acquire)) {
+            return EBUSY;
         }
         return 0;
     }

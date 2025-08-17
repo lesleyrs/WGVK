@@ -210,8 +210,15 @@ int main(){
         if (!conn) continue;
         
         printf("Connector %d: id=%u, type=%d, connected=%d, cound_modes: %d\n", i, conn->connector_id, conn->connector_type, conn->connection, conn->count_modes);
+        
         if(conn->count_modes > 0){
+            char modesString[8192];
+            char* modesStringp = modesString;
+            for(int mi = 0;mi < conn->count_modes;mi++){
+                modesStringp += snprintf(modesStringp, ((char*)modesString) + sizeof(modesString) - modesStringp, "Mode %d: %d x %d@%u, ", mi, (int)conn->modes[mi].hdisplay, (int)conn->modes[mi].vdisplay, conn->modes[mi].vrefresh);
+            }
             nonZeroModeIndex = i;
+            puts(modesString);
             //break;
         }
         //drmModeFreeConnector(conn);
@@ -247,6 +254,8 @@ int main(){
         .format = scFormat,
         .viewFormats = &scFormat,
         .viewFormatCount = 1,
+        .width = 2560,
+        .height = 1440
     };
 
     wgpuSurfaceConfigure(surface, &surfaceConfiguration);

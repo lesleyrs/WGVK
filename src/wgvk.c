@@ -7013,14 +7013,41 @@ typedef struct CreateComputePipelineAsyncState{
     WGPUDevice device;
     WGPUComputePipelineDescriptor cpdesc;
     WGPUCreateComputePipelineAsyncCallbackInfo callbackInfo;
-    Atomar(WGPURenderPipeline) renderPipeline;
+    Atomar(WGPUComputePipeline) computePipeline;
     Atomar(uint32_t) completed;
 }CreateComputePipelineAsyncState;
+
+static void* wgpuDeviceCreateComputePipelineAsync_sync(void* _crps){
+    CreateComputePipelineAsyncState* crps = (CreateComputePipelineAsyncState*)_crps;
+    crps->computePipeline = wgpuDeviceCreateComputePipeline(crps->device, &crps->cpdesc);
+    if(crps->callbackInfo.mode == WGPUCallbackMode_AllowSpontaneous){
+        if(crps->computePipeline){
+            crps->callbackInfo.callback(WGPUCreatePipelineAsyncStatus_Success, crps->computePipeline, (WGPUStringView){"", 0}, crps->callbackInfo.userdata1, crps->callbackInfo.userdata2);
+        }
+        else{
+            crps->callbackInfo.callback(WGPUCreatePipelineAsyncStatus_InternalError, crps->computePipeline, (WGPUStringView){"", 0}, crps->callbackInfo.userdata1, crps->callbackInfo.userdata2);
+        }
+    }
+    atomic_store_explicit(&crps->completed, 1, memory_order_release);
+    return _crps;
+}
 
 WGPUFuture wgpuDeviceCreateComputePipelineAsync(WGPUDevice device, WGPUComputePipelineDescriptor const * descriptor, WGPUCreateComputePipelineAsyncCallbackInfo callbackInfo) {
     ENTRY();
     uint64_t futureID = ++device->adapter->instance->currentFutureId;
-    return (WGPUFuture){};
+    WGPUFutureImpl futureImpl = {0}; // = RL_CALLOC(1, sizeof(WGPUFutureImpl));
+    FutureIDMap_put(&device->adapter->instance->g_futureIDMap, futureID, futureImpl);
+    CreateComputePipelineAsyncState* crps = RL_CALLOC(1, sizeof(CreateComputePipelineAsyncState));
+    crps->callbackInfo = callbackInfo;
+    crps->completed = 0;
+    crps->device = device;
+    crps->cpdesc = *descriptor;
+    if(callbackInfo.mode == WGPUCallbackMode_AllowSpontaneous){
+        wgvk_thread_create(&crps->thread, wgpuDeviceCreateComputePipelineAsync_sync, (void*)crps);
+    }
+    return (WGPUFuture){
+        .id = futureID
+    };
     EXIT();
 }
 WGPUQuerySet wgpuDeviceCreateQuerySet(WGPUDevice device, const WGPUQuerySetDescriptor* descriptor) {

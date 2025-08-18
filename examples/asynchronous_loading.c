@@ -1,3 +1,4 @@
+#include <threads.h>
 #include <wgvk.h>
 #include <external/volk.h>
 #include <stdio.h>
@@ -93,6 +94,13 @@ void reflectionCallback(WGPUReflectionInfoRequestStatus status, const WGPUReflec
             printf(", minBindingSize = %d", (int)toBePrinted->buffer.minBindingSize);
         }
         printf("\n");
+    }
+}
+
+void createPipelineAsyncCallback(WGPUCreatePipelineAsyncStatus status, WGPUComputePipeline cpl, WGPUStringView message, void* userdata1, void* userdata2){
+    if(status == WGPUCreatePipelineAsyncStatus_Success){
+        WGPUComputePipeline* dcpl = (WGPUComputePipeline*)userdata1;
+        *dcpl = cpl;
     }
 }
 
@@ -231,8 +239,16 @@ int main(){
     });
 
     cplDesc.layout = pllayout;
-    WGPUCreateComputePipelineAsyncCallbackInfo callbackInfo = {0};
+    WGPUComputePipeline cpl = NULL;
+    WGPUCreateComputePipelineAsyncCallbackInfo callbackInfo = {
+        .callback = createPipelineAsyncCallback,
+        .mode = WGPUCallbackMode_AllowSpontaneous,
+        .userdata1 = &cpl,
+    };
     WGPUFuture cplFuture = wgpuDeviceCreateComputePipelineAsync(device, &cplDesc, callbackInfo);
+    do{
+        thrd_yield();
+    }while(cpl == NULL);
     //WGPUComputePipeline cpl = wgpuDeviceCreateComputePipeline(device, &cplDesc);
     
     WGPUBuffer stbuf = wgpuDeviceCreateBuffer(device, &(WGPUBufferDescriptor){

@@ -2061,6 +2061,7 @@ typedef struct WGVKCapabilities{
 typedef struct FIFCache{
     WGPUDevice device;
     PerframeCache frameCaches[framesInFlight];
+    WGPUFence topFence;
 }FIFCache;
 
 typedef struct WGPUDeviceImpl{

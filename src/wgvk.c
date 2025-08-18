@@ -7371,9 +7371,9 @@ WGPUFuture wgpuDeviceCreateRenderPipelineAsync(WGPUDevice device, const WGPURend
     crps->completed = 0;
     crps->device = device;
     crps->rpdesc = copyRenderPipelineDescriptor(descriptor);
-    if(callbackInfo.mode == WGPUCallbackMode_AllowSpontaneous){
-        wgvk_thread_create(&crps->thread, wgpuDeviceCreateRenderPipelineAsync_sync, (void*)crps);
-    }
+    //if(callbackInfo.mode == WGPUCallbackMode_AllowSpontaneous){
+    wgvk_thread_create(&crps->thread, wgpuDeviceCreateRenderPipelineAsync_sync, (void*)crps);
+    //}
 
     WGPUFutureImpl* futureImpl = RL_CALLOC(1, sizeof(WGPUFutureImpl));
     futureImpl->freeUserData = RL_FREE;

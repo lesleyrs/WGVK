@@ -2689,7 +2689,7 @@ static inline VkComponentSwizzle toVkSwizzleComponent(WGPUComponentSwizzle wgpuS
         case WGPUComponentSwizzle_Undefined:
         case WGPUComponentSwizzle_Force32:
         rg_unreachable();
-        wgvk_assert(False, "Invalid enum passed");
+        wgvk_assert(false, "Invalid enum passed");
         abort();
     }
 }

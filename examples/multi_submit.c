@@ -316,7 +316,7 @@ int main(){
     
     float* floatData = calloc(floatCount, sizeof(float));
     for(uint32_t i = 0;i < floatCount;i++){
-        floatData[i] = powf(1.5f, (float)i);
+        floatData[i] = (float)i;
     }
 
     WGPUBindGroupEntry entries[2] = {
@@ -370,7 +370,6 @@ int main(){
     //wgpuCommandEncoderCopyBufferToBuffer(cenc, buffer1, 0, readableBuffer, 0, 64);
     WGPUCommandBuffer cmdBuffer = wgpuCommandEncoderFinish(cenc, NULL);
     wgpuCommandEncoderRelease(cenc);
-    
     WGPUCommandEncoder cenc2 = wgpuDeviceCreateCommandEncoder(device, NULL);
     WGPUComputePassEncoder cpenc2 = wgpuCommandEncoderBeginComputePass(cenc2, NULL);
     wgpuComputePassEncoderSetPipeline(cpenc2, rpl);

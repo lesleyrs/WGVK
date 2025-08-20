@@ -1,15 +1,9 @@
-#include <stdlib.h>
+#include <threads.h>
 #include <wgvk.h>
 #include <external/volk.h>
 #include <stdio.h>
 #include <external/incbin.h>
 #include <string.h>
-
-#include <unistd.h>
-#include <fcntl.h>
-#include <xf86drm.h>
-#include <xf86drmMode.h>
-
 #ifndef STRVIEW
     #define STRVIEW(X) (WGPUStringView){X, sizeof(X) - 1}
 #endif
@@ -103,6 +97,13 @@ void reflectionCallback(WGPUReflectionInfoRequestStatus status, const WGPUReflec
     }
 }
 
+void createPipelineAsyncCallback(WGPUCreatePipelineAsyncStatus status, WGPUComputePipeline cpl, WGPUStringView message, void* userdata1, void* userdata2){
+    if(status == WGPUCreatePipelineAsyncStatus_Success){
+        WGPUComputePipeline* dcpl = (WGPUComputePipeline*)userdata1;
+        *dcpl = cpl;
+    }
+}
+
 int main(){
     WGPUInstanceLayerSelection lsel = {
         .chain = {
@@ -185,7 +186,7 @@ int main(){
             .length = sizeof("Compute Modul"),
         }
     };
-
+    
     WGPUShaderModule computeModule = wgpuDeviceCreateShaderModule(device, &computeModuleDesc);
     
     WGPUReflectionInfoCallbackInfo reflectionCallbackInfo = {
@@ -195,122 +196,6 @@ int main(){
         .userdata1 = NULL,
         .userdata2 = NULL
     };
-    int drmFD = open("/dev/dri/card1", O_RDWR | O_CLOEXEC);
-    drmModeRes *res = drmModeGetResources(drmFD);
-    if (!res) {
-        perror("drmModeGetResources");
-        close(drmFD);
-        return 1;
-    }
-    drmModeConnector** connectors = calloc(res->count_connectors, sizeof(drmModeConnector*));
-    int nonZeroModeIndex = -1;
-    for (int i = 0; i < res->count_connectors; i++) {
-        connectors[i] = drmModeGetConnector(drmFD, res->connectors[i]);
-        drmModeConnector* conn = connectors[i];
-        if (!conn) continue;
-        
-        printf("Connector %d: id=%u, type=%s, connected=%d, count_modes: %d\n", i, conn->connector_id, drmModeGetConnectorTypeName(conn->connector_type), conn->connection, conn->count_modes);
-        
-        if(conn->count_modes > 0){
-            char modesString[8192];
-            char* modesStringp = modesString;
-            for(int mi = 0;mi < conn->count_modes;mi++){
-                modesStringp += snprintf(modesStringp, ((char*)modesString) + sizeof(modesString) - modesStringp, "   Mode[%d] %s: %d x %d@%u\n", mi, conn->modes[mi].name, (int)conn->modes[mi].hdisplay, (int)conn->modes[mi].vdisplay, conn->modes[mi].vrefresh);
-            }
-            nonZeroModeIndex = i;
-            //puts(modesString);
-            //break;
-        }
-        //drmModeFreeConnector(conn);
-    }
-    if(nonZeroModeIndex == -1){
-        fprintf(stderr, "No drm connector found with at least one mode");
-        exit(1);
-    }
-    close(drmFD);
-    
-    
-    WGPUSurfaceSourceDrmPlane drmPlane = {
-        .chain = {
-            .sType = WGPUSType_SurfaceSourceDrmPlane
-        },
-        .drmFd = drmFD,
-        .connectorId = connectors[nonZeroModeIndex]->connector_id,
-        .adapter = requestedAdapter,
-        .modeSelect = WGPUDrmModeSelect_ByIndex
-    };
-
-    WGPUSurfaceDescriptor surfDesc = {
-        .nextInChain = &drmPlane.chain,
-    };
-    WGPUSurface surface = wgpuInstanceCreateSurface(instance, &surfDesc);
-    if(surface == NULL){
-        fprintf(stderr, "[Error] §wgpuInstanceCreateSurface returned NULL\n");
-        fprintf(stderr, "[Error] Unable to acquire the desired display, are you running a compositor?\n");
-        exit(1);
-    }
-    //drmModeFreeConnector(conn);
-    
-    WGPUSurfaceCapabilities capabilities = {0};
-    wgpuSurfaceGetCapabilities(surface, requestedAdapter, &capabilities);
-    
-    //__builtin_dump_struct(&capabilities, printf);
-    
-    WGPUTextureFormat scFormat = capabilities.formats[0];
-    WGPUSurfaceConfiguration surfaceConfiguration = {
-        .device = device,
-        .alphaMode = WGPUCompositeAlphaMode_Opaque,
-        .presentMode = WGPUPresentMode_Fifo,
-        .format = scFormat,
-        .viewFormats = &scFormat,
-        .viewFormatCount = 1,
-        .width = 3840,
-        .height = 2160
-    };
-
-    wgpuSurfaceConfigure(surface, &surfaceConfiguration);
-    
-    
-    WGPUQueue queue = wgpuDeviceGetQueue(device);
-    WGPUSurfaceTexture surfaceTexture;
-    while(true){
-        wgpuSurfaceGetCurrentTexture(surface, &surfaceTexture);
-        if(surfaceTexture.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal){
-            
-        }
-        WGPUTextureView surfaceView = wgpuTextureCreateView(surfaceTexture.texture, &(const WGPUTextureViewDescriptor){
-            .baseArrayLayer = 0,
-            .arrayLayerCount = 1,
-            .baseMipLevel = 0,
-            .mipLevelCount = 1,
-            .format = scFormat,
-            .dimension = WGPUTextureViewDimension_2D,
-            .usage = WGPUTextureUsage_RenderAttachment,
-            .aspect = WGPUTextureAspect_All,
-        });
-        WGPUCommandEncoder cenc = wgpuDeviceCreateCommandEncoder(device, NULL);
-        WGPURenderPassColorAttachment colorAttachment = {
-            .clearValue = (WGPUColor){0.5,0.2,0,0.5},
-            .loadOp = WGPULoadOp_Clear,
-            .storeOp = WGPUStoreOp_Store,
-            .view = surfaceView
-        };
-
-        WGPURenderPassEncoder rpenc = wgpuCommandEncoderBeginRenderPass(cenc, &(const WGPURenderPassDescriptor){
-            .colorAttachmentCount = 1,
-            .colorAttachments = &colorAttachment,
-        });
-        wgpuRenderPassEncoderEnd(rpenc);
-        WGPUCommandBuffer cbuf = wgpuCommandEncoderFinish(cenc, NULL);
-        wgpuQueueSubmit(queue, 1, &cbuf);
-        wgpuCommandEncoderRelease(cenc);
-        wgpuCommandBufferRelease(cbuf);
-        wgpuSurfacePresent(surface);
-        break;
-    }
-    sleep(1);
-
-
 
     WGPUFuture computeReflectionFuture = wgpuShaderModuleGetReflectionInfo(computeModule, reflectionCallbackInfo);
 
@@ -354,7 +239,17 @@ int main(){
     });
 
     cplDesc.layout = pllayout;
-    WGPUComputePipeline cpl = wgpuDeviceCreateComputePipeline(device, &cplDesc);
+    WGPUComputePipeline cpl = NULL;
+    WGPUCreateComputePipelineAsyncCallbackInfo callbackInfo = {
+        .callback = createPipelineAsyncCallback,
+        .mode = WGPUCallbackMode_AllowSpontaneous,
+        .userdata1 = &cpl,
+    };
+    WGPUFuture cplFuture = wgpuDeviceCreateComputePipelineAsync(device, &cplDesc, callbackInfo);
+    do{
+        thrd_yield();
+    }while(cpl == NULL);
+    //WGPUComputePipeline cpl = wgpuDeviceCreateComputePipeline(device, &cplDesc);
     
     WGPUBuffer stbuf = wgpuDeviceCreateBuffer(device, &(WGPUBufferDescriptor){
         .size = 64,
@@ -366,7 +261,7 @@ int main(){
         .usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead
     });
 
-    
+    WGPUQueue queue = wgpuDeviceGetQueue(device);
     float floatData[16] = {
         0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
     };

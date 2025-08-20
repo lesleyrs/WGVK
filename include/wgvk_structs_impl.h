@@ -6,8 +6,14 @@
 #include <external/VmaUsage.h>
 #include <wgvk_config.h>
 #include <stdbool.h>
+#ifdef __cplusplus
+    #include <atomic>
+#else
+    #include <stdatomic.h>
+#endif
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #ifndef TERMCTL_RESET
@@ -92,66 +98,59 @@
 
 /* Basic Threading */
 
-typedef struct {
-#if defined(_WIN32)
-    HANDLE handle;
+/* thread handle (concrete so callers can stack-allocate) */
+#if defined(_WIN32) || defined(_WIN64)
+  #include <windows.h>
+  typedef HANDLE wgvk_native_thread_handle_t;
 #else
-    pthread_t id;
+  #include <pthread.h>
+  typedef pthread_t wgvk_native_thread_handle_t;
 #endif
-} wgvk_thread_t;
 
+typedef struct { wgvk_native_thread_handle_t handle; } wgvk_thread_t;
 typedef void* (*wgvk_thread_func_t)(void*);
 
-int wgvk_thread_create(wgvk_thread_t* thread, wgvk_thread_func_t func, void* arg);
-int wgvk_thread_join  (wgvk_thread_t* thread, void** result);
-int wgvk_thread_detach(wgvk_thread_t* thread);
+/* thread API */
+int  wgvk_thread_create(wgvk_thread_t* thread, wgvk_thread_func_t func, void* arg);
+int  wgvk_thread_join  (wgvk_thread_t* thread, void** result);
+int  wgvk_thread_detach(wgvk_thread_t* thread);
 
-/* Mutex */
+/* lock backend selection */
+typedef enum wgvk_locktype{
+    wgvk_locktype_kernel = 0,
+    wgvk_locktype_spin = 1
+} wgvk_locktype;
 
-typedef struct {
-#if defined(_WIN32)
-    CRITICAL_SECTION cs;
-#else
-    pthread_mutex_t mutex;
-#endif
-} wgvk_mutex_t;
+/* opaque sync types */
+typedef struct wgvk_mutex wgvk_mutex_t;
+typedef struct wgvk_cond  wgvk_cond_t;
 
-int wgvk_mutex_init(wgvk_mutex_t* mutex);
-int wgvk_mutex_destroy(wgvk_mutex_t* mutex);
-int wgvk_mutex_lock(wgvk_mutex_t* mutex);
-int wgvk_mutex_unlock(wgvk_mutex_t* mutex);
+wgvk_mutex_t* wgvk_mutex_create(wgvk_locktype backend);
+int           wgvk_mutex_destroy(wgvk_mutex_t* m);
+int           wgvk_mutex_lock(wgvk_mutex_t* m);
+int           wgvk_mutex_try_lock(wgvk_mutex_t* m);
+int           wgvk_mutex_unlock(wgvk_mutex_t* m);
 
-/* Condition Variable */
+wgvk_cond_t*  wgvk_cond_create(wgvk_locktype backend);
+int           wgvk_cond_destroy(wgvk_cond_t* c);
+int           wgvk_cond_wait(wgvk_cond_t* c, wgvk_mutex_t* m); /* caller holds m; returns holding m */
+int           wgvk_cond_signal(wgvk_cond_t* c);
+int           wgvk_cond_broadcast(wgvk_cond_t* c);
 
-typedef struct {
-#if defined(_WIN32)
-    CONDITION_VARIABLE cond;
-#else
-    pthread_cond_t cond;
-#endif
-} wgvk_cond_t;
-
-int wgvk_cond_init(wgvk_cond_t* cond);
-int wgvk_cond_destroy(wgvk_cond_t* cond);
-int wgvk_cond_wait(wgvk_cond_t* cond, wgvk_mutex_t* mutex);
-int wgvk_cond_signal(wgvk_cond_t* cond);
-int wgvk_cond_broadcast(wgvk_cond_t* cond);
-
-/* Thread Pool */
 
 typedef enum {
-    WGVK_JOB_PENDING,
-    WGVK_JOB_RUNNING,
-    WGVK_JOB_COMPLETED
+    WGVK_JOB_PENDING = 0,
+    WGVK_JOB_RUNNING = 1,
+    WGVK_JOB_COMPLETED = 2
 } wgvk_job_status;
 
 typedef struct wgvk_job_t {
     wgvk_thread_func_t func;
     void* arg;
     void* result;
-    volatile wgvk_job_status status;
-    wgvk_mutex_t status_mutex;
-    wgvk_cond_t status_cond;
+    volatile int status;
+    wgvk_mutex_t* status_mutex;
+    wgvk_cond_t*  status_cond;
     struct wgvk_job_t* next;
 } wgvk_job_t;
 
@@ -160,8 +159,8 @@ typedef struct {
     size_t num_threads;
     wgvk_job_t* head;
     wgvk_job_t* tail;
-    wgvk_mutex_t queue_mutex;
-    wgvk_cond_t queue_cond;
+    wgvk_mutex_t* queue_mutex;
+    wgvk_cond_t*  queue_cond;
     volatile int stop;
 } wgvk_thread_pool_t;
 
@@ -170,6 +169,7 @@ void wgvk_thread_pool_destroy(wgvk_thread_pool_t* pool);
 wgvk_job_t* wgvk_job_enqueue(wgvk_thread_pool_t* pool, wgvk_thread_func_t func, void* arg);
 int wgvk_job_wait(wgvk_job_t* job, void** result);
 void wgvk_job_destroy(wgvk_job_t* job);
+
 
 
 
@@ -1364,6 +1364,7 @@ typedef enum RCPassCommandType{
     rp_command_type_draw_indexed,
     rp_command_type_draw_indexed_indirect,
     rp_command_type_draw_indirect,
+    rp_command_type_set_stencil_reference,
     rp_command_type_set_blend_constant,
     rp_command_type_set_viewport,
     rp_command_type_set_scissor_rect,
@@ -1476,6 +1477,9 @@ typedef struct RenderPassCommandSetBlendConstant{
     WGPUColor color;
 }RenderPassCommandSetBlendConstant;
 
+typedef struct RenderPassCommandSetStencilReference{
+    uint32_t reference;
+}RenderPassCommandSetStencilReference;
 
 typedef struct RenderPassCommandMultiDrawIndexedIndirect {
     WGPUBuffer indirectBuffer;
@@ -1537,6 +1541,7 @@ typedef struct RenderPassCommandGeneric {
         RenderPassCommandSetScissorRect setScissorRect;
         RenderPassCommandDrawIndexedIndirect drawIndexedIndirect;
         RenderPassCommandDrawIndirect drawIndirect;
+        RenderPassCommandSetStencilReference setStencilReference;
         RenderPassCommandSetBlendConstant setBlendConstant;
         RenderPassCommandSetVertexBuffer setVertexBuffer;
         RenderPassCommandSetIndexBuffer setIndexBuffer;
@@ -1604,7 +1609,13 @@ DEFINE_PTR_HASH_MAP_ERASABLE(static inline, BindGroupCacheMap, DescriptorSetAndP
 //DEFINE_PTR_HASH_MAP(static inline, BindGroupUsageMap, uint32_t)
 //DEFINE_PTR_HASH_MAP(static inline, SamplerUsageMap, uint32_t)
 
-typedef uint32_t refcount_type;
+#ifdef __cplusplus
+    #define Atomar(X) std::atomic<X>
+#else
+    #define Atomar(X) _Atomic(X)
+#endif
+
+typedef Atomar(uint32_t) refcount_type;
 
 typedef struct ResourceUsage{
     BufferUsageRecordMap referencedBuffers;
@@ -1846,6 +1857,8 @@ typedef struct PerframeCache{
     VkCommandBuffer finalTransitionBuffer;
     VkSemaphore finalTransitionSemaphore;
     WGPUFence finalTransitionFence;
+    SyncState syncState;
+    PendingCommandBufferMap pendingCommandBuffers;
     //std::map<uint64_t, small_vector<MappableBufferMemory>> stagingBufferCache;
     //std::unordered_map<WGPUBindGroupLayout, std::vector<std::pair<VkDescriptorPool, VkDescriptorSet>>> bindGroupCache;
     BindGroupCacheMap bindGroupCache;
@@ -1873,19 +1886,21 @@ typedef struct CallbackWithUserdata{
 
 DEFINE_VECTOR(static inline, CallbackWithUserdata, CallbackWithUserdataVector);
 
-typedef enum WGPUFenceState{
+typedef enum WGPUFenceState {
     WGPUFenceState_Reset,
     WGPUFenceState_InUse,
+    WGPUFenceState_Waiting, // A thread is actively waiting on the VkFence
     WGPUFenceState_Finished,
     WGPUFenceState_Force32 = 0x7FFFFFFF,
-}WGPUFenceState;
-typedef struct WGPUFenceImpl{
+} WGPUFenceState;
+
+typedef struct WGPUFenceImpl {
     VkFence fence;
-    WGPUFenceState state;
+    Atomar(WGPUFenceState) state;
     WGPUDevice device;
     refcount_type refCount;
     CallbackWithUserdataVector callbacksOnWaitComplete;
-}WGPUFenceImpl;
+} WGPUFenceImpl;
 
 typedef struct PendingCommandBufferListRef{
     WGPUFence fence;
@@ -1920,6 +1935,7 @@ typedef struct WGPUPipelineLayoutImpl{
     uint32_t bindGroupLayoutCount;
     refcount_type refCount;
 }WGPUPipelineLayoutImpl;
+
 typedef enum AllocationType{
     AllocationTypeUndefined = 0,
     AllocationTypeVMA = 1,
@@ -1948,7 +1964,7 @@ typedef struct WGPUBufferImpl{
 }WGPUBufferImpl;
 
 typedef struct WGPURayTracingShaderBindingTableImpl{
-    uint32_t refCount;
+    refcount_type refCount;
     uint32_t shaderGroupCount;
     uint32_t shaderStageCount;
     VkRayTracingShaderGroupCreateInfoKHR* shaderGroups;
@@ -2009,7 +2025,7 @@ typedef struct WGPUInstanceImpl{
     refcount_type refCount;
     VkDebugUtilsMessengerEXT debugMessenger;
 
-    uint64_t currentFutureId;
+    Atomar(uint64_t) currentFutureId;
     FutureIDMap g_futureIDMap;
 }WGPUInstanceImpl;
 
@@ -2036,7 +2052,15 @@ typedef struct WGVKCapabilities{
     WGPUBool raytracing;
     WGPUBool shaderDeviceAddress;
     WGPUBool dynamicRendering;
+    WGPUBool depthClipEnable;
+    WGPUBool depthClipControl;
 }WGVKCapabilities;
+
+typedef struct FIFCache{
+    WGPUDevice device;
+    PerframeCache frameCaches[framesInFlight];
+    WGPUFence topFence;
+}FIFCache;
 
 typedef struct WGPUDeviceImpl{
     VkDevice device;
@@ -2053,7 +2077,7 @@ typedef struct WGPUDeviceImpl{
     #endif
 
     VmaPool aligned_hostVisiblePool;
-    PerframeCache frameCaches[framesInFlight];
+    FIFCache fifCache;
     VkCommandPool secondaryCommandPool;
     RenderPassCache renderPassCache;
     WGPUUncapturedErrorCallbackInfo uncapturedErrorCallbackInfo;
@@ -2062,10 +2086,34 @@ typedef struct WGPUDeviceImpl{
     struct VolkDeviceTable functions;
 }WGPUDeviceImpl;
 
+static PerframeCache* DeviceGetFIFCache(WGPUDevice device, uint32_t cacheIndex){
+    wgvk_assert(cacheIndex < framesInFlight, "CacheIndex >= framesInFlight passed");
+    return device->fifCache.frameCaches + cacheIndex;
+}
+static SyncState* DeviceGetSyncState(WGPUDevice device, uint32_t cacheIndex){
+    //wgvk_assert(cacheIndex < framesInFlight, "CacheIndex >= framesInFlight passed");
+    return &DeviceGetFIFCache(device, cacheIndex)->syncState;
+}
+
+
+
 static inline void FenceCache_Init(WGPUDevice device, FenceCache* ptr){
     ptr->device = device;
     VkFenceVector_init(&ptr->cachedFences);
 }
+/**
+ * @brief Registers commandBuffers to depend on fence and be released when fence is waited for
+ * @details Takes ownership of the commandBuffers vector data. commandBuffers does not have to be externally freed after this
+ * @param pfcache 
+ * @param fence 
+ * @param commandBuffers 
+ */
+void PerframeCache_pushFenceDependencies(PerframeCache* pfcache, WGPUFence fence, WGPUCommandBufferVector* commandBuffers);
+void FIFCache_init(FIFCache* fifCache, WGPUDevice device, uint32_t queueFamily);
+void SyncState_destroy(WGPUDevice device, SyncState* syncState);
+void FIFCache_destroy(FIFCache* fcache);
+
+
 static inline VkFence FenceCache_GetFence(FenceCache* ptr){
     if(ptr->cachedFences.size == 0){
         VkFence ret = NULL;
@@ -2100,13 +2148,15 @@ static inline void FenceCache_Destroy(FenceCache* ptr){
     VkFenceVector_free(&ptr->cachedFences);
 }
 typedef uint8_t SlimComponentSwizzle;
-static const SlimComponentSwizzle SLIM_COMPONENT_SWIZZLE_IDENTITY = VK_COMPONENT_SWIZZLE_IDENTITY;
-static const SlimComponentSwizzle SLIM_COMPONENT_SWIZZLE_ZERO = VK_COMPONENT_SWIZZLE_ZERO;
-static const SlimComponentSwizzle SLIM_COMPONENT_SWIZZLE_ONE = VK_COMPONENT_SWIZZLE_ONE;
-static const SlimComponentSwizzle SLIM_COMPONENT_SWIZZLE_R = VK_COMPONENT_SWIZZLE_R;
-static const SlimComponentSwizzle SLIM_COMPONENT_SWIZZLE_G = VK_COMPONENT_SWIZZLE_G;
-static const SlimComponentSwizzle SLIM_COMPONENT_SWIZZLE_B = VK_COMPONENT_SWIZZLE_B;
-static const SlimComponentSwizzle SLIM_COMPONENT_SWIZZLE_A = VK_COMPONENT_SWIZZLE_A;
+
+#define SLIM_COMPONENT_SWIZZLE_IDENTITY ((SlimComponentSwizzle)VK_COMPONENT_SWIZZLE_IDENTITY)
+#define SLIM_COMPONENT_SWIZZLE_ZERO ((SlimComponentSwizzle)VK_COMPONENT_SWIZZLE_ZERO)
+#define SLIM_COMPONENT_SWIZZLE_ONE ((SlimComponentSwizzle)VK_COMPONENT_SWIZZLE_ONE)
+#define SLIM_COMPONENT_SWIZZLE_R ((SlimComponentSwizzle)VK_COMPONENT_SWIZZLE_R)
+#define SLIM_COMPONENT_SWIZZLE_G ((SlimComponentSwizzle)VK_COMPONENT_SWIZZLE_G)
+#define SLIM_COMPONENT_SWIZZLE_B ((SlimComponentSwizzle)VK_COMPONENT_SWIZZLE_B)
+#define SLIM_COMPONENT_SWIZZLE_A ((SlimComponentSwizzle)VK_COMPONENT_SWIZZLE_A)
+
 
 typedef struct SlimComponentMapping{
     SlimComponentSwizzle r;
@@ -2224,7 +2274,7 @@ typedef struct WGPUComputePipelineImpl{
 
 typedef struct WGPURaytracingPipelineImpl{
     VkPipeline raytracingPipeline;
-    uint32_t refCount;
+    refcount_type refCount;
     WGPUPipelineLayout layout;
     WGPUBuffer sbtBuffer;
     VkDeviceSize totalSbtSize;
@@ -2331,7 +2381,7 @@ typedef struct WGPURenderBundleImpl{
     RenderPassCommandGenericVector bufferedCommands;
     DynamicStateCommandBufferMap encodedCommandBuffers;
     WGPUDevice device;
-    uint32_t refCount;
+    refcount_type refCount;
     
     VkFormat* colorAttachmentFormats;
     uint32_t colorAttachmentCount;
@@ -2342,7 +2392,7 @@ typedef struct WGPURenderBundleImpl{
 typedef struct WGPURenderBundleEncoderImpl{
     RenderPassCommandGenericVector bufferedCommands;
     WGPUDevice device;
-    uint32_t refCount;
+    refcount_type refCount;
     uint32_t cacheIndex;
     WGPUBool movedFrom;
     WGPUPipelineLayout lastLayout;
@@ -2357,7 +2407,7 @@ void ComputePassEncoder_PushCommand(WGPUComputePassEncoder, const RenderPassComm
 
 typedef struct WGPUCommandEncoderImpl{
     VkCommandBuffer buffer;
-    uint32_t refCount;
+    refcount_type refCount;
     uint32_t encodedCommandCount;
     WGPURenderPassEncoderSet referencedRPs;
     WGPUComputePassEncoderSet referencedCPs;
@@ -2441,12 +2491,12 @@ typedef struct WGPUQueueImpl{
     VkQueue presentQueue;
     refcount_type refCount;
 
-    SyncState syncState[framesInFlight];
+    
     WGPUDevice device;
 
     WGPUCommandEncoder presubmitCache;
 
-    PendingCommandBufferMap pendingCommandBuffers[framesInFlight];
+    
 }WGPUQueueImpl;
 
 
@@ -2463,6 +2513,7 @@ typedef struct WGPUQuerySetImpl{
 }WGPUQuerySetImpl;
 
 
+char* sw_sprintf(const char* format, ...);
 
 
 #if WGPU_VALIDATION_ENABLED
@@ -3812,6 +3863,8 @@ static inline VkAccessFlags extractVkAccessFlags(const WGPUBindGroupLayoutEntry*
 }
 
 
+#define ENTRY()// (void)0// printf("Entering: %s\n", __func__)
+#define EXIT()// (void)0// printf("Exiting: %s\n", __func__)
 
 
 

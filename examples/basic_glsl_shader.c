@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <math.h>
 
+#include <wgvk_structs_impl.h>
+
 
 // The WGSL shader source remains the same.
 const char vertexSource[] = R"(#version 450
@@ -46,7 +48,7 @@ uint64_t stamp;
 uint64_t frameCount = 0;
 uint64_t totalFrameCount = 0;
 int resized = 0;
-
+WGPUBuffer adhocBuffer;
 void main_loop(void* user_data) {
     Context* ctx = (Context*)user_data;
     WGPUDevice device = ctx->base.device;
@@ -121,7 +123,6 @@ void main_loop(void* user_data) {
         .size = sizeof(adhocVertices),
         .usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst
     };
-    static WGPUBuffer adhocBuffer;
     if(totalFrameCount == 0){
         adhocBuffer = wgpuDeviceCreateBuffer(device, &adhocBufferDesc);
     }
@@ -181,7 +182,7 @@ int main() {
             .length = WGPU_STRLEN
         }
     };
-    WGPUShaderSourceGLSL fragmetCodeDesc = {
+    WGPUShaderSourceGLSL fragmentCodeDesc = {
         .chain = { .sType = WGPUSType_ShaderSourceGLSL },
         .stage = WGPUShaderStage_Fragment,
         .code = {
@@ -190,7 +191,7 @@ int main() {
         }
     };
     WGPUShaderModuleDescriptor vertexDesc = {.nextInChain = &vertexCodeDesc.chain };
-    WGPUShaderModuleDescriptor fragmentDesc = { .nextInChain = &fragmetCodeDesc.chain };
+    WGPUShaderModuleDescriptor fragmentDesc = { .nextInChain = &fragmentCodeDesc.chain };
     WGPUShaderModule vertexShaderModule = wgpuDeviceCreateShaderModule(device, &vertexDesc);
     WGPUShaderModule fragmentShaderModule = wgpuDeviceCreateShaderModule(device, &fragmentDesc);
 
@@ -362,6 +363,14 @@ int main() {
     while(!glfwWindowShouldClose(ctx->base.window)){
         main_loop(ctx);
     }
+    glfwDestroyWindow(ctx->base.window);
     #endif
+    wgpuBufferRelease(ctx->index_buffer);
+    wgpuBufferRelease(adhocBuffer);
+    wgpuBindGroupRelease(ctx->bind_group);
+    wgpuSurfaceRelease(ctx->base.surface);
+    wgpuBindGroupLayoutRelease(bindGroupLayout);
+    wgpuRenderPipelineRelease(ctx->pipeline);
+    wgpuDeviceRelease(device);
     return 0;
 }

@@ -299,7 +299,11 @@ RGAPI tc_SpirvBlob wgslToSpirv(const WGPUShaderSourceWGSL *source, uint32_t cons
     tint::wgsl::reader::Options options{};
     tint::Program prog = tint::wgsl::reader::Parse(&file, options);
     tint::inspector::Inspector inspector(prog);
-    const std::vector<tint::inspector::EntryPoint>& entryPoints = inspector.GetEntryPoints();
+    if(inspector.has_error()){
+        return {};
+    }
+    
+    std::vector<tint::inspector::EntryPoint> entryPoints = inspector.GetEntryPoints();
     tc_SpirvBlob ret{};
     for(size_t i = 0;i < entryPoints.size();i++){
         const tint::inspector::EntryPoint& entryPoint = entryPoints[i];

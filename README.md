@@ -3,8 +3,8 @@
 <a href="https://opensource.org/licenses/MIT">
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" height="25">
 </a>
-<a href="https://en.wikipedia.org/wiki/C99">
-  <img src="https://img.shields.io/badge/Language-C99-blue.svg" alt="Language" height="25">
+<a href="https://en.wikipedia.org/wiki/C11">
+  <img src="https://img.shields.io/badge/Language-C11-blue.svg" alt="Language" height="25">
 </a>
 <a href="https://cmake.org/">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-lightgreen.svg" alt="Platform" height="25">
@@ -12,7 +12,7 @@
 
 
 
-A standalone, single-file, fully feature-conformant implementation WebGPU API in C99, built on top of Vulkan 1.1. WGVK is designed for easy integration into C/C++ projects, providing a modern graphics and compute API without the steep learning curve of raw Vulkan.
+A standalone, single-file, fully feature-conformant implementation WebGPU API in C11, built on top of Vulkan 1.1. WGVK is designed for easy integration into C/C++ projects, providing a modern graphics and compute API without the steep learning curve of raw Vulkan.
 ## Implementation progress
 
 - ▓▓▓▓▓▓▓▓▓▓ 100% WebGPU Conformity

@@ -20,7 +20,7 @@ typedef struct tc_SpirvBlob{
 #ifdef __cplusplus
 extern "C"{
 #endif
-    WGPUShaderModule wgpuDeviceCreateShaderModuleGLSL(WGPUDevice device, const WGPUShaderModuleDescriptor* shDesc);
+WGVK_EXPORT WGPUShaderModule wgpuDeviceCreateShaderModuleGLSL(WGPUDevice device, const WGPUShaderModuleDescriptor* shDesc);
 #ifdef __cplusplus
 }
 #endif

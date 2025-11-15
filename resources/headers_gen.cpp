@@ -133,7 +133,7 @@ void emitStructDefinition(
     if (hasExcludedTag(value, excluded_tags)) return;
 
     std::string struct_name = types.at(key).name;
-    std::cout << "struct " << struct_name << " {\n";
+    std::cout << "typedef struct " << struct_name << " {\n";
 
     if (value.contains("extensible")) {
         const auto& prop = value.at("extensible");
@@ -156,7 +156,7 @@ void emitStructDefinition(
              std::cout << "    " << formatFullType(member, "type", types) << " " << toCamelCase(member["name"]) << ";\n";
         }
     }
-    std::cout << "};\n\n";
+    std::cout << "} " << struct_name << ";\n\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -365,8 +365,12 @@ int main(int argc, char* argv[]) {
                 value.emplace("methods", json::array());
             }
             json releaseMethod;
+            json addRefMethod;
             releaseMethod["name"] = "release";
+            addRefMethod["name"] = "add ref";
             value["methods"].push_back(std::move(releaseMethod));
+            value["methods"].push_back(std::move(addRefMethod));
+
             if(value.contains("methods")){
             for (const auto& method : value["methods"]) {
                 if (hasExcludedTag(method, excluded_tags)) continue;

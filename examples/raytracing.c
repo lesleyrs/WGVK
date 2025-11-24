@@ -1,6 +1,8 @@
 #include "common.h"
 #include <wgvk.h>
 #include <wgvk_structs_impl.h>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
 
 extern const char raygenSource[];
 extern const char rchitSource[];
@@ -27,7 +29,7 @@ int main(){
     wgpu_base base = wgpu_init();
     printf("Initialized device: %p\n", base.device);
     WGPUBufferDescriptor vbDesc = {
-        .usage = WGPUBufferUsage_Raytracing,
+        .usage = WGPUBufferUsage_Raytracing | WGPUBufferUsage_ShaderDeviceAddress,
         .size = sizeof(float) * vertexFloatCount,
     };
     WGPUBuffer vertexBuffer = wgpuDeviceCreateBuffer(base.device, &vbDesc);
@@ -44,7 +46,7 @@ int main(){
         .vertex = {
             .format = WGPUVertexFormat_Float32x3,
             .count = 3,
-            .stride = sizeof(float) * vertexFloatCount,
+            .stride = sizeof(float) * 3, // vertexFloatCount,
             .offset = 0,
             .buffer = vertexBuffer
         }
@@ -61,14 +63,18 @@ int main(){
 
     WGPURayTracingAccelerationContainer blas = wgpuDeviceCreateRayTracingAccelerationContainer(base.device, &blasDesc);
     
-    WGPURayTracingAccelerationInstanceTransformDescriptor identity = {0};
-    identity.scale.x = 1;
-    identity.scale.y = 1;
-    identity.scale.z = 1;
+    WGPUTransformMatrix identity = {
+        1,0,0,0,
+        0,1,0,0,
+        0,0,1,0
+    };
+
     WGPURayTracingAccelerationInstanceDescriptor instance = {
+        .usage = WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable,
         .instanceId = 0,
         .instanceOffset = 0,
-        .transform = identity,
+        .mask = 0xff,
+        .transformMatrix = identity,
         .geometryContainer = blas,
     };
     {
@@ -76,9 +82,13 @@ int main(){
         wgpuCommandEncoderBuildRayTracingAccelerationContainer(enc, blas);
         WGPUCommandBuffer cbuf = wgpuCommandEncoderFinish(enc, NULL);
         wgpuQueueSubmit(base.queue, 1, &cbuf);
+
+        ///TODO: make better
+        wgpuQueueWaitIdle(base.queue);
     }
 
     WGPURayTracingAccelerationContainerDescriptor tlasDesc = {
+        .usage = WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable,
         .level = WGPURayTracingAccelerationContainerLevel_Top,
         .instanceCount = 1,
         .instances = &instance
@@ -90,6 +100,8 @@ int main(){
         wgpuCommandEncoderBuildRayTracingAccelerationContainer(enc, tlas);
         WGPUCommandBuffer cbuf = wgpuCommandEncoderFinish(enc, NULL);
         wgpuQueueSubmit(base.queue, 1, &cbuf);
+        ///TODO: make better
+        wgpuQueueWaitIdle(base.queue);
     }
     WGPUShaderModule raygenModule = compileGLSLModule(base.device, raygenSource, WGPUShaderStage_RayGen);
     WGPUShaderModule rchitModule  = compileGLSLModule(base.device, rchitSource,  WGPUShaderStage_ClosestHit);
@@ -130,26 +142,29 @@ int main(){
         }
     };
     WGPURayTracingShaderBindingTableGroupDescriptor groups[3] = {
+        // Group 0: RayGen
         {
             .type = WGPURayTracingShaderBindingTableGroupType_General, 
-            .anyHitIndex = 0,
-            .closestHitIndex = 0,
-            .generalIndex = 0,
-            .intersectionIndex = 0,
+            .anyHitIndex = -1,
+            .closestHitIndex = -1,
+            .generalIndex = 0, // Points to stages[0] (RayGen)
+            .intersectionIndex = -1,
         },
+        // Group 1: Closest Hit (Triangle)
         {
             .type = WGPURayTracingShaderBindingTableGroupType_TrianglesHitGroup, 
-            .anyHitIndex = 0,
-            .closestHitIndex = 1,
-            .generalIndex = 0,
-            .intersectionIndex = 0,
+            .anyHitIndex = -1,
+            .closestHitIndex = 1, // Points to stages[1] (ClosestHit)
+            .generalIndex = -1,
+            .intersectionIndex = -1,
         },
+        // Group 2: Miss
         {
-            .type = WGPURayTracingShaderBindingTableGroupType_TrianglesHitGroup, 
-            .anyHitIndex = 0,
-            .closestHitIndex = 1,
-            .generalIndex = 0,
-            .intersectionIndex = 0,
+            .type = WGPURayTracingShaderBindingTableGroupType_General, // FIXED: Miss is a General group
+            .anyHitIndex = -1,
+            .closestHitIndex = -1,
+            .generalIndex = 2, // FIXED: Points to stages[2] (Miss)
+            .intersectionIndex = -1,
         },
     };
 
@@ -313,9 +328,16 @@ int main(){
         wgpuCommandBufferRelease(buffer);
         struct Vector4{float x,y,z,w;}* mapPointer = NULL;
         wgpuBufferMap(textureDump, WGPUMapMode_Read, 0, WGPU_WHOLE_MAP_SIZE, (void**)&mapPointer);
+
+        struct rgba8{uint8_t r,g,b,a;}* rgba8data = calloc(1024 * 1024, 4);
         for(size_t i = 0;i < 1024 * 1024;i++){
-            printf("%f, ", mapPointer[i].x);
+            rgba8data[i].r = 255 * (mapPointer[i].x > 1.0f ? 1.0f : mapPointer[i].x);
+            rgba8data[i].g = 255 * (mapPointer[i].y > 1.0f ? 1.0f : mapPointer[i].y);
+            rgba8data[i].b = 255 * (mapPointer[i].z > 1.0f ? 1.0f : mapPointer[i].z);
+            rgba8data[i].a = 255;
         }
+        stbi_write_png("rt.png", 1024, 1024, 4, rgba8data, 1024 * 4);
+        
     }
 }
 
@@ -356,7 +378,7 @@ void main() {
     float factor = tan(camera.fovY.x * 0.5f);
     vec3 raydirection = normalize(direction + factor * d.x * left + factor * d.y * realup);
 
-    payload = vec4(raydirection.yx, 0.3f, 1);
+    payload = vec4(0, 0, 0, 1);
     // Initialize payload
 
     // Trace ray
@@ -376,7 +398,7 @@ void main() {
     
     // Write result to output image
     imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(payload.xyz, 1.0f));
-    //imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(vec2(gl_LaunchIDEXT.xy * 0.01f),1,1));
+    //imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(vec2(gl_LaunchIDEXT.xy * 0.001f),0,1));
 }
 )";
 const char rchitSource[] = R"(#version 460
@@ -420,8 +442,10 @@ void main(){
     float diffuse = max(dot(normal, lightDir), 0.2);
     
     // Set final color
-    //payload = vec4(hitColor * diffuse, 1.0);
-    payload = vec4(1.0,float(gl_InstanceID),0.0,1.0);
+    
+    payload = vec4(1.0, 0.0, 0.0, 1.0);
+    // payload = vec4(hitColor * diffuse, 1.0);
+    // payload = vec4(1.0,float(gl_InstanceID),0.0,1.0);
 }
 )";
 const char rmissSource[] = R"(#version 460
@@ -439,5 +463,5 @@ void main(){
     vec3 skyColor = mix(vec3(1.0, 1.0, 1.0), vec3(0.5, 0.7, 1.0), t);
     
     // Write sky color to payload
-    payload = vec4(skyColor, 1.0f);
+    payload = vec4(0.0f, 0.1f, 0.2f, 1.0f);
 })";

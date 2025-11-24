@@ -1869,7 +1869,7 @@ typedef struct WGPURayTracingAccelerationInstanceDescriptor{
     uint8_t mask;
     uint32_t instanceId;
     uint32_t instanceOffset;
-    WGPURayTracingAccelerationInstanceTransformDescriptor transform;
+    //WGPURayTracingAccelerationInstanceTransformDescriptor transform;
     WGPUTransformMatrix transformMatrix;
     WGPURayTracingAccelerationContainer geometryContainer;
 }WGPURayTracingAccelerationInstanceDescriptor;

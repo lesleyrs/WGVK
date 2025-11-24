@@ -10635,7 +10635,8 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
                     geometries[i].geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
                     geometries[i].geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
                     geometries[i].geometry.triangles.vertexFormat = toVulkanVertexFormat(descriptor->geometries[i].vertex.format);
-                    geometries[i].geometry.triangles.vertexData.deviceAddress = descriptor->geometries[i].vertex.buffer->address;
+                    uint64_t address = descriptor->geometries[i].vertex.buffer->address;
+                    geometries[i].geometry.triangles.vertexData.deviceAddress = address;
                     geometries[i].geometry.triangles.vertexStride = descriptor->geometries[i].vertex.stride;
                     geometries[i].geometry.triangles.maxVertex = descriptor->geometries[i].vertex.count;
                     
@@ -10687,7 +10688,7 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
 
         WGPUBufferDescriptor vfbDesc = {
             .size = descriptor->instanceCount * sizeof(VkAccelerationStructureInstanceKHR),
-            .usage = WGPUBufferUsage_Raytracing,
+            .usage = WGPUBufferUsage_Raytracing | WGPUBufferUsage_ShaderDeviceAddress,
         };
 
         WGPUBuffer vulkanFormattedBuffer = wgpuDeviceCreateBuffer(device, &vfbDesc);
@@ -10695,12 +10696,14 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
         for(uint32_t i = 0;i < descriptor->instanceCount;i++){
             const WGPURayTracingAccelerationInstanceDescriptor* wgpuInstance = descriptor->instances + i;
             VkAccelerationStructureInstanceKHR* vulkanInstance = vulkanInstances + i;
+            
             memcpy(&vulkanInstance->transform, &wgpuInstance->transformMatrix, sizeof(VkTransformMatrixKHR));
             
             vulkanInstance->instanceCustomIndex = wgpuInstance->instanceId;
             vulkanInstance->mask = wgpuInstance->mask;
             vulkanInstance->instanceShaderBindingTableRecordOffset = wgpuInstance->instanceOffset;
-            vulkanInstance->flags = 0;
+            vulkanInstance->flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+            
             if (wgpuInstance->usage & WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable) {
                 vulkanInstance->flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
             }
@@ -10712,7 +10715,6 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
         }
         
         wgpuQueueWriteBuffer(device->queue, vulkanFormattedBuffer, 0, vulkanInstances, vfbDesc.size);
-        
         for(uint32_t i = 0;i < descriptor->instanceCount;i++){
             geometries[i].sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
             geometries[i].geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
@@ -10723,10 +10725,7 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
     }
     ret->geometries = geometries;
 
-    VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo = {
-        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
-        0,0,0,0
-    };
+    
 
     VkAccelerationStructureBuildGeometryInfoKHR geometryInfoVulkan = {
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
@@ -10735,7 +10734,9 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
         .type = descriptor->level == WGPURayTracingAccelerationContainerLevel_Bottom ? VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR : VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
         .dstAccelerationStructure = ret->accelerationStructure
     };
-
+    VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo = {
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR
+    };
     device->functions.vkGetAccelerationStructureBuildSizesKHR(
         device->device,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_HOST_OR_DEVICE_KHR,

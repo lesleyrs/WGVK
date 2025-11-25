@@ -4464,19 +4464,19 @@ void recordVkCommand(CommandBufferAndSomeState* destination_, const RenderPassCo
             const VkStridedDeviceAddressRegionKHR raygenSbtRegion = {
                 .deviceAddress = sbtBaseAddress + traceRays->rayGenerationOffset * handleStride,
                 .stride        = handleStride,
-                .size          = 32
+                .size          = handleStride
             };
         
             const VkStridedDeviceAddressRegionKHR missSbtRegion = {
                 .deviceAddress = sbtBaseAddress + traceRays->rayMissOffset * handleStride,
                 .stride        = handleStride,
-                .size          = 32
+                .size          = handleStride
             };
         
             const VkStridedDeviceAddressRegionKHR hitSbtRegion = {
                 .deviceAddress = sbtBaseAddress + traceRays->rayHitOffset * handleStride,
                 .stride        = handleStride,
-                .size          = 32
+                .size          = handleStride
             };
             
             const VkStridedDeviceAddressRegionKHR callableSbtRegion = { .deviceAddress = 0, .stride = 0, .size = 0 };
@@ -10544,6 +10544,13 @@ WGPURayTracingShaderBindingTable wgpuDeviceCreateRayTracingShaderBindingTable(WG
     EXIT();
 }
 
+static inline uint32_t roundup_to_multiple(uint32_t x, uint32_t multipleOf){
+    if(multipleOf == 0){
+        return x;
+    }
+    return (x + multipleOf - 1) & ~(multipleOf - 1);
+}
+
 WGPURaytracingPipeline wgpuDeviceCreateRayTracingPipeline(WGPUDevice device, const WGPURayTracingPipelineDescriptor* descriptor){
     ENTRY();
     // After creating the ray tracing pipeline in wgpuDeviceCreateRayTracingPipeline:
@@ -10564,23 +10571,25 @@ WGPURaytracingPipeline wgpuDeviceCreateRayTracingPipeline(WGPUDevice device, con
     const VkPhysicalDeviceRayTracingPipelinePropertiesKHR* rtProperties = &device->adapter->rayTracingPipelineProperties;
     const uint32_t handleAlignment = rtProperties->shaderGroupBaseAlignment;
     const uint32_t handleSize = device->adapter->rayTracingPipelineProperties.shaderGroupHandleSize;
+    const uint32_t handleSizeForAlloc = roundup_to_multiple(device->adapter->rayTracingPipelineProperties.shaderGroupHandleSize, device->adapter->rayTracingPipelineProperties.shaderGroupHandleAlignment);
     const uint32_t groupCount = descriptor->rayTracingState.shaderBindingTable->shaderGroupCount;
-    
+    const uint32_t baseAlignment = rtProperties->shaderGroupBaseAlignment;
+    const uint32_t sbtStride = roundup_to_multiple(handleSize, baseAlignment);  
+
     // calloc groupCount * handleSize bytes
-    uint8_t* shaderHandles = (uint8_t*)RL_CALLOC(groupCount, handleSize);
-    uint64_t shaderHandlesSizeInBytes = ((uint64_t)groupCount) * handleSize;
+    uint8_t* shaderHandles = (uint8_t*)RL_CALLOC(groupCount, handleSizeForAlloc);
+    uint64_t shaderHandlesSizeInBytes = ((uint64_t)groupCount) * handleSizeForAlloc;
     // Get the handles
     VkResult result = device->functions.vkGetRayTracingShaderGroupHandlesKHR(
         device->device,
         ret->raytracingPipeline,
-        0,                      // firstGroup
-        groupCount,             // groupCount
-        shaderHandlesSizeInBytes, // dataSize
-        shaderHandles           // pData
+        0,                         // firstGroup
+        groupCount,                // groupCount
+        shaderHandlesSizeInBytes,  // dataSize
+        shaderHandles              // pData
     );
 
-    const VkDeviceSize handleStride = (handleSize + (handleAlignment - 1)) & ~(handleAlignment - 1);
-    const VkDeviceSize sbtTotalSize = groupCount * handleStride;
+    const VkDeviceSize sbtTotalSize = groupCount * handleSizeForAlloc;
     
     // Store the total size on the pipeline object.
     ret->totalSbtSize = sbtTotalSize;
@@ -10588,7 +10597,7 @@ WGPURaytracingPipeline wgpuDeviceCreateRayTracingPipeline(WGPUDevice device, con
     // Still in wgpuDeviceCreateRayTracingPipeline or a new function for the SBT
     WGPUBufferDescriptor sbtBufferDesc = {
         .size = shaderHandlesSizeInBytes,
-        .usage = WGPUBufferUsage_Raytracing, // | WGPUBufferUsage_ShaderDeviceAddress
+        .usage = WGPUBufferUsage_Raytracing | WGPUBufferUsage_ShaderDeviceAddress | WGPUBufferUsage_CopyDst,
         .mappedAtCreation = true // Or map it after creation
     };
     
@@ -10601,8 +10610,8 @@ WGPURaytracingPipeline wgpuDeviceCreateRayTracingPipeline(WGPUDevice device, con
     wgpuBufferUnmap(ret->sbtBuffer);
     
     RL_FREE(shaderHandles);
-    return ret;
     EXIT();
+    return ret;
 }
 
 WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContainer(WGPUDevice device, const WGPURayTracingAccelerationContainerDescriptor* descriptor){

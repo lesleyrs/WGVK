@@ -463,5 +463,5 @@ void main(){
     vec3 skyColor = mix(vec3(1.0, 1.0, 1.0), vec3(0.5, 0.7, 1.0), t);
     
     // Write sky color to payload
-    payload = vec4(0.0f, 0.1f, 0.2f, 1.0f);
+    payload = vec4(0.8f, 0.1f, 0.2f, 1.0f);
 })";

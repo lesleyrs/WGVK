@@ -70,15 +70,32 @@ int main(){
         0,1,0,0,
         0,0,1,0
     };
-
-    WGPURayTracingAccelerationInstanceDescriptor instance = {
-        .usage = WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable,
-        .instanceId = 0,
-        .instanceOffset = 0,
-        .mask = 0xff,
-        .transformMatrix = identity,
-        .geometryContainer = blas,
+    WGPUTransformMatrix identity2 = {
+        1,0,0,0,
+        0,1,0,0,
+        0,0,1,0
     };
+
+
+    WGPURayTracingAccelerationInstanceDescriptor instances[2] = {
+        {
+            .usage = WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable,
+            .instanceId = 0,
+            .instanceOffset = 0,
+            .mask = 0xff,
+            .transformMatrix = identity,
+            .geometryContainer = blas,
+        },
+        {
+            .usage = WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable,
+            .instanceId = 0,
+            .instanceOffset = 0,
+            .mask = 0xff,
+            .transformMatrix = identity2,
+            .geometryContainer = blas,
+        }
+    };
+    
     {
         WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(base.device, NULL);
         wgpuCommandEncoderBuildRayTracingAccelerationContainer(enc, blas);
@@ -92,8 +109,8 @@ int main(){
     WGPURayTracingAccelerationContainerDescriptor tlasDesc = {
         .usage = WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable,
         .level = WGPURayTracingAccelerationContainerLevel_Top,
-        .instanceCount = 1,
-        .instances = &instance
+        .instanceCount = 2,
+        .instances = instances
     };
     
     WGPURayTracingAccelerationContainer tlas = wgpuDeviceCreateRayTracingAccelerationContainer(base.device, &tlasDesc);

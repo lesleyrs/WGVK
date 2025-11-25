@@ -10630,8 +10630,7 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
     WGPURayTracingAccelerationContainer ret = RL_CALLOC(1, sizeof(WGPURayTracingAccelerationContainerImpl));
     ret->level = descriptor->level;
     ret->device = device;
-    wgpuDeviceAddRef(device);
-    uint32_t geometryCount = (descriptor->level == WGPURayTracingAccelerationContainerLevel_Bottom) ? descriptor->geometryCount : descriptor->instanceCount;
+    uint32_t geometryCount = (descriptor->level == WGPURayTracingAccelerationContainerLevel_Bottom) ? descriptor->geometryCount : 1;
     ret->geometryCount = geometryCount;
     ret->primitiveCounts = RL_CALLOC(geometryCount, sizeof(uint32_t));
     uint32_t* maxPrimitiveCounts = ret->primitiveCounts;
@@ -10708,19 +10707,13 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
         for(uint32_t i = 0;i < descriptor->instanceCount;i++){
             const WGPURayTracingAccelerationInstanceDescriptor* wgpuInstance = descriptor->instances + i;
             VkAccelerationStructureInstanceKHR* vulkanInstance = vulkanInstances + i;
-            ///TODOVERYBAD:
-            VkTransformMatrixKHR identity = {0};
-            identity.matrix[0][0] = 1.0f;
-            identity.matrix[1][1] = 1.0f;
-            identity.matrix[2][2] = 1.0f;
             maxPrimitiveCounts[i] = 1;
-            //memcpy(&vulkanInstance->transform, &wgpuInstance->transformMatrix, sizeof(VkTransformMatrixKHR));
-            memcpy(&vulkanInstance->transform, &identity, sizeof(VkTransformMatrixKHR));
+            memcpy(&vulkanInstance->transform, &wgpuInstance->transformMatrix, sizeof(VkTransformMatrixKHR));
             
             vulkanInstance->instanceCustomIndex = wgpuInstance->instanceId;
             vulkanInstance->mask = wgpuInstance->mask;
             vulkanInstance->instanceShaderBindingTableRecordOffset = wgpuInstance->instanceOffset;
-            vulkanInstance->flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+            vulkanInstance->flags = 0;
             
             if (wgpuInstance->usage & WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable) {
                 vulkanInstance->flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
@@ -10756,7 +10749,7 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
         .pGeometries = geometries,
         .geometryCount = geometryCount,
         .type = descriptor->level == WGPURayTracingAccelerationContainerLevel_Bottom ? VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR : VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        .dstAccelerationStructure = ret->accelerationStructure
+        .dstAccelerationStructure = VK_NULL_HANDLE
     };
 
     VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo = {
@@ -10811,6 +10804,7 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
     
     geometryInfoVulkan.dstAccelerationStructure = ret->accelerationStructure;
     geometryInfoVulkan.geometryCount = descriptor->geometryCount;
+    wgpuDeviceAddRef(device);
     return ret;
     EXIT();
 }

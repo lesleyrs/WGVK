@@ -96,6 +96,26 @@ target_compile_features(${WGVK_PRIMARY_TARGET_NAME} PUBLIC c_std_11)
 if(MSVC)
   target_compile_options(${WGVK_PRIMARY_TARGET_NAME} PUBLIC "/experimental:c11atomics")
 endif()
+set(NONMSVC_WARNINGS "-Wall" "-Wextra" "-Wno-unused-function" "-Wno-unused-parameter" "-Wno-missing-field-initializers")
+target_compile_options(${WGVK_PRIMARY_TARGET_NAME} PRIVATE
+  # MSVC (including clang-cl when using MSVC frontend)
+  $<$<CXX_COMPILER_ID:MSVC>:
+    /W4
+  >
+  # GCC
+  $<$<CXX_COMPILER_ID:GNU>:
+    ${NONMSVC_WARNINGS}
+  >
+  # Clang (Unix-style, not clang-cl)
+  $<$<CXX_COMPILER_ID:Clang>:
+    ${NONMSVC_WARNINGS}
+  >
+  # AppleClang (if you want to distinguish it)
+  $<$<CXX_COMPILER_ID:AppleClang>:
+    ${NONMSVC_WARNINGS}
+  >
+)
+
 
 if(WGVK_BUILD_WGSL_SUPPORT)
   

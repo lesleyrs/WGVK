@@ -1,3 +1,5 @@
+// raytracing.c example
+
 #include "common.h"
 #include <wgvk.h>
 #include <wgvk_structs_impl.h>
@@ -46,7 +48,7 @@ int main(){
         .vertex = {
             .format = WGPUVertexFormat_Float32x3,
             .count = 3,
-            .stride = sizeof(float) * 3, // vertexFloatCount,
+            .stride = sizeof(float) * 3,//vertexFloatCount,
             .offset = 0,
             .buffer = vertexBuffer
         }
@@ -147,23 +149,23 @@ int main(){
             .type = WGPURayTracingShaderBindingTableGroupType_General, 
             .anyHitIndex = -1,
             .closestHitIndex = -1,
-            .generalIndex = 0, // Points to stages[0] (RayGen)
+            .generalIndex = 0,
             .intersectionIndex = -1,
         },
         // Group 1: Closest Hit (Triangle)
         {
             .type = WGPURayTracingShaderBindingTableGroupType_TrianglesHitGroup, 
             .anyHitIndex = -1,
-            .closestHitIndex = 1, // Points to stages[1] (ClosestHit)
+            .closestHitIndex = 1,
             .generalIndex = -1,
             .intersectionIndex = -1,
         },
         // Group 2: Miss
         {
-            .type = WGPURayTracingShaderBindingTableGroupType_General, // FIXED: Miss is a General group
+            .type = WGPURayTracingShaderBindingTableGroupType_General,
             .anyHitIndex = -1,
             .closestHitIndex = -1,
-            .generalIndex = 2, // FIXED: Points to stages[2] (Miss)
+            .generalIndex = 2,
             .intersectionIndex = -1,
         },
     };
@@ -184,21 +186,21 @@ int main(){
     WGPUBindGroupLayoutEntry bglEntries[3] = {
         [0] = {
             .binding = 0,
-            .visibility = WGPUShaderStage_RayGen,
+            .visibility = WGPUShaderStage_RayGen | WGPUShaderStage_ClosestHit | WGPUShaderStage_Miss,
             .accelerationStructure = 1
         },
         [1] = {
             .binding = 1,
-            .visibility = WGPUShaderStage_RayGen,
+            .visibility = WGPUShaderStage_RayGen | WGPUShaderStage_ClosestHit | WGPUShaderStage_Miss,
             .storageTexture = {
                 .viewDimension = WGPUTextureViewDimension_2D,
                 .access = WGPUStorageTextureAccess_WriteOnly,
-                .format = WGPUTextureFormat_RGBA8Unorm
+                .format = WGPUTextureFormat_RGBA32Float
             }
         },
         [2] = {
             .binding = 2,
-            .visibility = WGPUShaderStage_RayGen,
+            .visibility = WGPUShaderStage_RayGen | WGPUShaderStage_ClosestHit | WGPUShaderStage_Miss,
             .buffer = {
                 .type = WGPUBufferBindingType_Uniform,
                 .minBindingSize = sizeof(float) * 16,
@@ -259,7 +261,7 @@ int main(){
         {0, 0, -4, 0},
         {0, 0, 0, 0},
         {0, 1, 0, 0},
-        {1.1, 0, 0, 0},
+        {1.1f, 0, 0, 0},
     };
     wgpuQueueWriteBuffer(base.queue, camerabuffer, 0, cameraData, 64);
 
@@ -299,7 +301,7 @@ int main(){
     WGPUCommandBuffer cbuffer =  wgpuCommandEncoderFinish(cenc, NULL);
     wgpuQueueSubmit(base.queue, 1, &cbuffer);
     WGPUBuffer textureDump = wgpuDeviceCreateBuffer(base.device, &(const WGPUBufferDescriptor){
-        .size = 1024 * 1024 * 16,
+        .size = ((size_t)1024) * 1024 * 16,
         .usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst
     });
     {
@@ -398,7 +400,7 @@ void main() {
     
     // Write result to output image
     imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(payload.xyz, 1.0f));
-    //imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(vec2(gl_LaunchIDEXT.xy * 0.001f),0,1));
+    //imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(gl_LaunchIDEXT.x * 0.001f,0,0,1));
 }
 )";
 const char rchitSource[] = R"(#version 460
@@ -443,8 +445,8 @@ void main(){
     
     // Set final color
     
-    payload = vec4(1.0, 0.0, 0.0, 1.0);
-    // payload = vec4(hitColor * diffuse, 1.0);
+    //payload = vec4(1.0, 0.0, 0.0, 1.0);
+    payload = vec4(hitColor * diffuse, 1.0);
     // payload = vec4(1.0,float(gl_InstanceID),0.0,1.0);
 }
 )";
@@ -463,5 +465,5 @@ void main(){
     vec3 skyColor = mix(vec3(1.0, 1.0, 1.0), vec3(0.5, 0.7, 1.0), t);
     
     // Write sky color to payload
-    payload = vec4(0.8f, 0.1f, 0.2f, 1.0f);
+    payload = vec4(0.1f, 0.1f, 0.2f, 1.0f);
 })";

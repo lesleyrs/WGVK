@@ -2092,6 +2092,7 @@ typedef struct WGPURayTracingAccelerationContainerImpl{
     VkAccelerationStructureGeometryKHR* geometries;
     VkAccelerationStructureBuildRangeInfoKHR* buildRangeInfos;
     uint32_t* primitiveCounts;
+    WGPUBuffer instanceBuffer;
     WGPUBuffer accelerationStructureBuffer;
     WGPUBuffer updateScratchBuffer;
     WGPUBuffer buildScratchBuffer;

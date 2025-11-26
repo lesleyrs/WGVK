@@ -15,132 +15,132 @@
 // -----------------------------------------------------------------------------
 
 // Ray generation shader: simple pinhole camera
-static const char raygenSource[] = R"(
-#version 460
-#extension GL_EXT_ray_tracing : require
-
-layout(binding = 0) uniform accelerationStructureEXT topLevelAS;
-layout(binding = 1, rgba32f) uniform image2D image;
-
-layout(binding = 2) uniform CameraProperties {
-    vec4 eye;
-    vec4 target;
-    vec4 up;
-    vec4 fovY; // .x = vertical FOV in radians
-} camera;
-
-layout(location = 0) rayPayloadEXT vec4 payload;
-
-void main() {
-    vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
-    vec2 uv = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
-    vec2 d = uv * 2.0 - 1.0;
-
-    vec3 origin = camera.eye.xyz;
-    vec3 target = camera.target.xyz;
-    vec3 forward = normalize(target - origin);
-    vec3 right = normalize(cross(normalize(camera.up.xyz), forward));
-    vec3 up = normalize(cross(forward, right));
-
-    float f = tan(camera.fovY.x * 0.5);
-    vec3 dir = normalize(forward + f * d.x * right + f * d.y * up);
-
-    payload = vec4(0.0);
-
-    traceRayEXT(
-        topLevelAS,
-        gl_RayFlagsOpaqueEXT,
-        0xFF,
-        0,          // sbtRecordOffset
-        0,          // sbtRecordStride
-        0,          // missIndex
-        origin,
-        0.001,
-        dir,
-        100.0,
-        0           // payload location
-    );
-
-    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(payload.xyz, 1.0));
-}
-)";
+static const char raygenSource[] = 
+"#version 460\n"
+"#extension GL_EXT_ray_tracing : require\n"
+"\n"
+"layout(binding = 0) uniform accelerationStructureEXT topLevelAS;\n"
+"layout(binding = 1, rgba32f) uniform image2D image;\n"
+"\n"
+"layout(binding = 2) uniform CameraProperties {\n"
+"    vec4 eye;\n"
+"    vec4 target;\n"
+"    vec4 up;\n"
+"    vec4 fovY; // .x = vertical FOV in radians\n"
+"} camera;\n"
+"\n"
+"layout(location = 0) rayPayloadEXT vec4 payload;\n"
+"\n"
+"void main() {\n"
+"    vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);\n"
+"    vec2 uv = pixelCenter / vec2(gl_LaunchSizeEXT.xy);\n"
+"    vec2 d = uv * 2.0 - 1.0;\n"
+"\n"
+"    vec3 origin = camera.eye.xyz;\n"
+"    vec3 target = camera.target.xyz;\n"
+"    vec3 forward = normalize(target - origin);\n"
+"    vec3 right = normalize(cross(normalize(camera.up.xyz), forward));\n"
+"    vec3 up = normalize(cross(forward, right));\n"
+"\n"
+"    float f = tan(camera.fovY.x * 0.5);\n"
+"    vec3 dir = normalize(forward + f * d.x * right + f * d.y * up);\n"
+"\n"
+"    payload = vec4(0.0);\n"
+"\n"
+"    traceRayEXT(\n"
+"        topLevelAS,\n"
+"        gl_RayFlagsOpaqueEXT,\n"
+"        0xFF,\n"
+"        0,          // sbtRecordOffset\n"
+"        0,          // sbtRecordStride\n"
+"        0,          // missIndex\n"
+"        origin,\n"
+"        0.001,\n"
+"        dir,\n"
+"        100.0,\n"
+"        0           // payload location\n"
+"    );\n"
+"\n"
+"    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(payload.xyz, 1.0));\n"
+"}\n"
+;
 
 // Procedural intersection shader for AABB [0,0,0] – [1,1,1] in object space
-static const char intersectSource[] = R"(
-#version 460
-#extension GL_EXT_ray_tracing : require
-
-hitAttributeEXT vec3 attribs;
-
-// Ray-box intersection with axis-aligned box [0,0,0] to [1,1,1]
-bool intersectBox(vec3 orig, vec3 dir, out float tHit) {
-    vec3 invD = 1.0 / dir;
-
-    vec3 t0 = (vec3(0.0) - orig) * invD;
-    vec3 t1 = (vec3(1.0) - orig) * invD;
-
-    vec3 tmin = min(t0, t1);
-    vec3 tmax = max(t0, t1);
-
-    float tEnter = max(max(tmin.x, tmin.y), tmin.z);
-    float tExit  = min(min(tmax.x, tmax.y), tmax.z);
-
-    tHit = tEnter;
-    return (tExit >= max(tEnter, 0.0));
-}
-
-void main() {
-    vec3 orig = gl_ObjectRayOriginEXT;
-    vec3 dir  = gl_ObjectRayDirectionEXT;
-    float tHit;
-    if (intersectBox(orig - vec3(0, gl_PrimitiveID * 1.5, 0), dir, tHit)) {
-        attribs = vec3(orig + tHit * dir); // Not used, but must be written
-        reportIntersectionEXT(tHit, 0);
-    }
-}
-)";
+static const char intersectSource[] =
+"#version 460\n"
+"#extension GL_EXT_ray_tracing : require\n"
+"\n"
+"hitAttributeEXT vec3 attribs;\n"
+"\n"
+"// Ray-box intersection with axis-aligned box [0,0,0] to [1,1,1]\n"
+"bool intersectBox(vec3 orig, vec3 dir, out float tHit) {\n"
+"    vec3 invD = 1.0 / dir;\n"
+"\n"
+"    vec3 t0 = (vec3(0.0) - orig) * invD;\n"
+"    vec3 t1 = (vec3(1.0) - orig) * invD;\n"
+"\n"
+"    vec3 tmin = min(t0, t1);\n"
+"    vec3 tmax = max(t0, t1);\n"
+"\n"
+"    float tEnter = max(max(tmin.x, tmin.y), tmin.z);\n"
+"    float tExit  = min(min(tmax.x, tmax.y), tmax.z);\n"
+"\n"
+"    tHit = tEnter;\n"
+"    return (tExit >= max(tEnter, 0.0));\n"
+"}\n"
+"\n"
+"void main() {\n"
+"    vec3 orig = gl_ObjectRayOriginEXT;\n"
+"    vec3 dir  = gl_ObjectRayDirectionEXT;\n"
+"    float tHit;\n"
+"    if (intersectBox(orig - vec3(0, gl_PrimitiveID * 1.5, 0), dir, tHit)) {\n"
+"        attribs = vec3(orig + tHit * dir); // Not used, but must be written\n"
+"        reportIntersectionEXT(tHit, 0);\n"
+"    }\n"
+"}\n"
+;
 
 // Closest hit shader: simple lambert shading and instance visualization
-static const char rchitSource[] = R"(
-#version 460
-#extension GL_EXT_ray_tracing : require
-
-layout(location = 0) rayPayloadInEXT vec4 payload;
-hitAttributeEXT vec3 attribs;
-
-void main() {
-    // Color by instance (0 = red, 1 = green, etc.)
-    vec3 baseColor;
-    if (gl_InstanceID == 0) {
-        baseColor = vec3(1.0, 0.2, 0.2);
-    } else if (gl_InstanceID == 1) {
-        baseColor = vec3(0.2, 1.0, 0.2);
-    } else {
-        baseColor = vec3(0.7);
-    }
-
-    vec3 N = normalize(vec3(0.0, 1.0, 0.0));
-    vec3 L = normalize(vec3(1.0, 1.0, 1.0));
-    float diff = max(dot(N, L), 0.2);
-
-    payload = vec4(attribs,1);
-}
-)";
+static const char rchitSource[] = 
+"#version 460\n"
+"#extension GL_EXT_ray_tracing : require\n"
+"\n"
+"layout(location = 0) rayPayloadInEXT vec4 payload;\n"
+"hitAttributeEXT vec3 attribs;\n"
+"\n"
+"void main() {\n"
+"    // Color by instance (0 = red, 1 = green, etc.)\n"
+"    vec3 baseColor;\n"
+"    if (gl_InstanceID == 0) {\n"
+"        baseColor = vec3(1.0, 0.2, 0.2);\n"
+"    } else if (gl_InstanceID == 1) {\n"
+"        baseColor = vec3(0.2, 1.0, 0.2);\n"
+"    } else {\n"
+"        baseColor = vec3(0.7);\n"
+"    }\n"
+"\n"
+"    vec3 N = normalize(vec3(0.0, 1.0, 0.0));\n"
+"    vec3 L = normalize(vec3(1.0, 1.0, 1.0));\n"
+"    float diff = max(dot(N, L), 0.2);\n"
+"\n"
+"    payload = vec4(attribs,1);\n"
+"}\n"
+;
 
 // Miss shader: dark blue-ish background
-static const char rmissSource[] = R"(
-#version 460
-#extension GL_EXT_ray_tracing : require
-
-layout(location = 0) rayPayloadInEXT vec4 payload;
-
-void main() {
-    vec3 dir = normalize(gl_WorldRayDirectionEXT);
-    float t = 0.5 * (dir.y + 1.0);
-    vec3 sky = mix(vec3(0.1, 0.1, 0.15), vec3(0.2, 0.4, 0.8), t);
-    payload = vec4(sky, 1.0);
-}
-)";
+static const char rmissSource[] = 
+"#version 460\n"
+"#extension GL_EXT_ray_tracing : require\n"
+"\n"
+"layout(location = 0) rayPayloadInEXT vec4 payload;\n"
+"\n"
+"void main() {\n"
+"    vec3 dir = normalize(gl_WorldRayDirectionEXT);\n"
+"    float t = 0.5 * (dir.y + 1.0);\n"
+"    vec3 sky = mix(vec3(0.1, 0.1, 0.15), vec3(0.2, 0.4, 0.8), t);\n"
+"    payload = vec4(sky, 1.0);\n"
+"}\n"
+;
 
 // -----------------------------------------------------------------------------
 // Helper: compile GLSL into a WGPUShaderModule

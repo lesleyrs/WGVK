@@ -1,59 +1,205 @@
-// raytracing.c example
+// raytracing.c – minimal AABB ray tracing example with working procedural hit group
 
 #include "common.h"
 #include <wgvk.h>
 #include <wgvk_structs_impl.h>
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
-extern const char raygenSource[];
-extern const char rchitSource[];
-extern const char rmissSource[];
+#define WIDTH  512
+#define HEIGHT 512
 
+// -----------------------------------------------------------------------------
+// GLSL shaders
+// -----------------------------------------------------------------------------
 
-#define vertexFloatCount 9
-WGPUShaderModule compileGLSLModule(WGPUDevice device, const char* source, WGPUShaderStage stage){
+// Ray generation shader: simple pinhole camera
+static const char raygenSource[] = R"(
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(binding = 0) uniform accelerationStructureEXT topLevelAS;
+layout(binding = 1, rgba32f) uniform image2D image;
+
+layout(binding = 2) uniform CameraProperties {
+    vec4 eye;
+    vec4 target;
+    vec4 up;
+    vec4 fovY; // .x = vertical FOV in radians
+} camera;
+
+layout(location = 0) rayPayloadEXT vec4 payload;
+
+void main() {
+    vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    vec2 uv = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
+    vec2 d = uv * 2.0 - 1.0;
+
+    vec3 origin = camera.eye.xyz;
+    vec3 target = camera.target.xyz;
+    vec3 forward = normalize(target - origin);
+    vec3 right = normalize(cross(normalize(camera.up.xyz), forward));
+    vec3 up = normalize(cross(forward, right));
+
+    float f = tan(camera.fovY.x * 0.5);
+    vec3 dir = normalize(forward + f * d.x * right + f * d.y * up);
+
+    payload = vec4(0.0);
+
+    traceRayEXT(
+        topLevelAS,
+        gl_RayFlagsOpaqueEXT,
+        0xFF,
+        0,          // sbtRecordOffset
+        0,          // sbtRecordStride
+        0,          // missIndex
+        origin,
+        0.001,
+        dir,
+        100.0,
+        0           // payload location
+    );
+
+    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(payload.xyz, 1.0));
+}
+)";
+
+// Procedural intersection shader for AABB [0,0,0] – [1,1,1] in object space
+static const char intersectSource[] = R"(
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+hitAttributeEXT vec3 attribs;
+
+// Ray-box intersection with axis-aligned box [0,0,0] to [1,1,1]
+bool intersectBox(vec3 orig, vec3 dir, out float tHit) {
+    vec3 invD = 1.0 / dir;
+
+    vec3 t0 = (vec3(0.0) - orig) * invD;
+    vec3 t1 = (vec3(1.0) - orig) * invD;
+
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+
+    float tEnter = max(max(tmin.x, tmin.y), tmin.z);
+    float tExit  = min(min(tmax.x, tmax.y), tmax.z);
+
+    tHit = tEnter;
+    return (tExit >= max(tEnter, 0.0));
+}
+
+void main() {
+    vec3 orig = gl_ObjectRayOriginEXT;
+    vec3 dir  = gl_ObjectRayDirectionEXT;
+    float tHit;
+    if (intersectBox(orig - vec3(0, gl_PrimitiveID * 1.5, 0), dir, tHit)) {
+        attribs = vec3(orig + tHit * dir); // Not used, but must be written
+        reportIntersectionEXT(tHit, 0);
+    }
+}
+)";
+
+// Closest hit shader: simple lambert shading and instance visualization
+static const char rchitSource[] = R"(
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(location = 0) rayPayloadInEXT vec4 payload;
+hitAttributeEXT vec3 attribs;
+
+void main() {
+    // Color by instance (0 = red, 1 = green, etc.)
+    vec3 baseColor;
+    if (gl_InstanceID == 0) {
+        baseColor = vec3(1.0, 0.2, 0.2);
+    } else if (gl_InstanceID == 1) {
+        baseColor = vec3(0.2, 1.0, 0.2);
+    } else {
+        baseColor = vec3(0.7);
+    }
+
+    vec3 N = normalize(vec3(0.0, 1.0, 0.0));
+    vec3 L = normalize(vec3(1.0, 1.0, 1.0));
+    float diff = max(dot(N, L), 0.2);
+
+    payload = vec4(attribs,1);
+}
+)";
+
+// Miss shader: dark blue-ish background
+static const char rmissSource[] = R"(
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(location = 0) rayPayloadInEXT vec4 payload;
+
+void main() {
+    vec3 dir = normalize(gl_WorldRayDirectionEXT);
+    float t = 0.5 * (dir.y + 1.0);
+    vec3 sky = mix(vec3(0.1, 0.1, 0.15), vec3(0.2, 0.4, 0.8), t);
+    payload = vec4(sky, 1.0);
+}
+)";
+
+// -----------------------------------------------------------------------------
+// Helper: compile GLSL into a WGPUShaderModule
+// -----------------------------------------------------------------------------
+static WGPUShaderModule compileGLSLModule(WGPUDevice device, const char *source, WGPUShaderStage stage) {
     WGPUShaderSourceGLSL glslSource = {
-    .chain.sType = WGPUSType_ShaderSourceGLSL,
+        .chain.sType = WGPUSType_ShaderSourceGLSL,
         .code = {
             source,
             WGPU_STRLEN
         },
         .stage = stage
     };
-    WGPUShaderModuleDescriptor vertexMD = {
+    WGPUShaderModuleDescriptor md = {
         .nextInChain = &glslSource.chain
     };
-    return wgpuDeviceCreateShaderModule(device, &vertexMD);
+    return wgpuDeviceCreateShaderModule(device, &md);
 }
 
-int main(){
+// Simple camera struct for the UBO
+typedef struct Vector4 {
+    float x, y, z, w;
+}Vector4;
+
+int main(void) {
+    // -------------------------------------------------------------------------
+    // Init
+    // -------------------------------------------------------------------------
     wgpu_base base = wgpu_init();
-    printf("Initialized device: %p\n", base.device);
-    WGPUBufferDescriptor vbDesc = {
-        .usage = WGPUBufferUsage_Raytracing | WGPUBufferUsage_ShaderDeviceAddress,
-        .size = sizeof(float) * vertexFloatCount,
-    };
-    WGPUBuffer vertexBuffer = wgpuDeviceCreateBuffer(base.device, &vbDesc);
-    float vertices[vertexFloatCount] = {
-        0, 0, 0,
-        1, 0, 0,
-        0, 1, 0
+    WGPUDevice device = base.device;
+    WGPUQueue queue = base.queue;
+
+    // -------------------------------------------------------------------------
+    // BLAS: single AABB [0,0,0]–[1,1,1]
+    // -------------------------------------------------------------------------
+    float aabb[12] = {
+        0.0f, 0.0f, 0.0f,
+        1.0f, 1.0f, 1.0f,
+        0.0f, 1.5f, 0.0f,
+        1.0f, 2.5f, 1.0f,
     };
 
-    wgpuQueueWriteBuffer(base.queue, vertexBuffer, 0, vertices, vertexFloatCount * sizeof(float));
+    WGPUBuffer aabbBuffer = wgpuDeviceCreateBuffer(device, &(const WGPUBufferDescriptor){
+        .usage = WGPUBufferUsage_Raytracing | WGPUBufferUsage_ShaderDeviceAddress,
+        .size  = sizeof(aabb)
+    });
+
+    wgpuQueueWriteBuffer(queue, aabbBuffer, 0, aabb, sizeof(aabb));
+
     WGPURayTracingAccelerationGeometryDescriptor geometry = {
-        .type = WGPURayTracingAccelerationGeometryType_Triangles,
+        .type = WGPURayTracingAccelerationGeometryType_AABBs,
         .index.format = WGPUIndexFormat_Undefined,
-        .vertex = {
-            .format = WGPUVertexFormat_Float32x3,
-            .count = 3,
-            .stride = sizeof(float) * 3,//vertexFloatCount,
-            .offset = 0,
-            .buffer = vertexBuffer
+        .aabb = {
+            .buffer = aabbBuffer,
+            .count  = 2,
+            .stride = sizeof(float) * 6,
+            .offset = 0
         }
     };
-    
 
     WGPURayTracingAccelerationContainerDescriptor blasDesc = {
         .level = WGPURayTracingAccelerationContainerLevel_Bottom,
@@ -61,204 +207,208 @@ int main(){
         .geometries = &geometry
     };
 
+    WGPURayTracingAccelerationContainer blas =
+        wgpuDeviceCreateRayTracingAccelerationContainer(device, &blasDesc);
 
+    // Build BLAS
+    {
+        WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(device, NULL);
+        wgpuCommandEncoderBuildRayTracingAccelerationContainer(enc, blas);
+        WGPUCommandBuffer cbuf = wgpuCommandEncoderFinish(enc, NULL);
+        wgpuQueueSubmit(queue, 1, &cbuf);
+        wgpuCommandEncoderRelease(enc);
+        wgpuCommandBufferRelease(cbuf);
+    }
 
-    WGPURayTracingAccelerationContainer blas = wgpuDeviceCreateRayTracingAccelerationContainer(base.device, &blasDesc);
-    
+    // -------------------------------------------------------------------------
+    // TLAS: one instance of the BLAS (you can easily add more)
+    // -------------------------------------------------------------------------
     WGPUTransformMatrix identity = {
         1,0,0,0,
         0,1,0,0,
         0,0,1,0
     };
-    WGPUTransformMatrix identity2 = {
-        1,0,0,1,
+    WGPUTransformMatrix translated = {
+        1,0,0,2,
         0,1,0,0,
         0,0,1,0
     };
-
 
     WGPURayTracingAccelerationInstanceDescriptor instances[2] = {
         {
             .usage = WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable,
             .instanceId = 0,
             .instanceOffset = 0,
-            .mask = 0xff,
+            .mask = 0xFF,
             .transformMatrix = identity,
-            .geometryContainer = blas,
+            .geometryContainer = blas
         },
         {
             .usage = WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable,
             .instanceId = 1,
             .instanceOffset = 0,
-            .mask = 0xff,
-            .transformMatrix = identity2,
-            .geometryContainer = blas,
+            .mask = 0xFF,
+            .transformMatrix = translated,
+            .geometryContainer = blas
         }
     };
     
-    {
-        WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(base.device, NULL);
-        wgpuCommandEncoderBuildRayTracingAccelerationContainer(enc, blas);
-        WGPUCommandBuffer cbuf = wgpuCommandEncoderFinish(enc, NULL);
-        wgpuQueueSubmit(base.queue, 1, &cbuf);
-
-        ///TODO: make better
-        wgpuQueueWaitIdle(base.queue);
-    }
 
     WGPURayTracingAccelerationContainerDescriptor tlasDesc = {
-        .usage = WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable,
         .level = WGPURayTracingAccelerationContainerLevel_Top,
-        .instanceCount = 2,
+        .instanceCount = 1,
         .instances = instances
     };
-    
-    WGPURayTracingAccelerationContainer tlas = wgpuDeviceCreateRayTracingAccelerationContainer(base.device, &tlasDesc);
+
+    WGPURayTracingAccelerationContainer tlas =
+        wgpuDeviceCreateRayTracingAccelerationContainer(device, &tlasDesc);
+
+    // Build TLAS
     {
-        WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(base.device, NULL);
+        WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(device, NULL);
         wgpuCommandEncoderBuildRayTracingAccelerationContainer(enc, tlas);
         WGPUCommandBuffer cbuf = wgpuCommandEncoderFinish(enc, NULL);
-        wgpuQueueSubmit(base.queue, 1, &cbuf);
-        ///TODO: make better
-        wgpuQueueWaitIdle(base.queue);
+        wgpuQueueSubmit(queue, 1, &cbuf);
+        wgpuCommandEncoderRelease(enc);
+        wgpuCommandBufferRelease(cbuf);
+        wgpuQueueWaitIdle(queue);
     }
-    WGPUShaderModule raygenModule = compileGLSLModule(base.device, raygenSource, WGPUShaderStage_RayGen);
-    WGPUShaderModule rchitModule  = compileGLSLModule(base.device, rchitSource,  WGPUShaderStage_ClosestHit);
-    WGPUShaderModule rmissModule  = compileGLSLModule(base.device, rmissSource,  WGPUShaderStage_Miss);
 
+    // -------------------------------------------------------------------------
+    // Shader modules
+    // -------------------------------------------------------------------------
+    WGPUShaderModule raygenModule     = compileGLSLModule(device, raygenSource,    WGPUShaderStage_RayGen);
+    WGPUShaderModule intersectModule  = compileGLSLModule(device, intersectSource, WGPUShaderStage_Intersect);
+    WGPUShaderModule rchitModule      = compileGLSLModule(device, rchitSource,     WGPUShaderStage_ClosestHit);
+    WGPUShaderModule rmissModule      = compileGLSLModule(device, rmissSource,     WGPUShaderStage_Miss);
 
-    const VkRayTracingShaderGroupCreateInfoKHR sGroup = {
-        .sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
-        .anyHitShader = VK_SHADER_UNUSED_KHR,
-        .closestHitShader = 0,
+    // -------------------------------------------------------------------------
+    // Shader Binding Table (stages + groups)
+    // Order of stages defines indices used in groups
+    // -------------------------------------------------------------------------
+    WGPURayTracingShaderBindingTableStageDescriptor stages[4] = {
+        { .stage = WGPUShaderStage_RayGen,     .module = raygenModule    }, // 0
+        { .stage = WGPUShaderStage_Miss,       .module = rmissModule     }, // 1
+        { .stage = WGPUShaderStage_ClosestHit, .module = rchitModule     }, // 2
+        { .stage = WGPUShaderStage_Intersect,  .module = intersectModule }  // 3
     };
-    
-    const VkRayTracingPipelineCreateInfoKHR vkrtdesc = {
-        .sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
-        .groupCount = 1,
-        .pGroups = &sGroup,
-    };
 
-    VkPipeline vkrtP = VK_NULL_HANDLE;
-    //VkResult result = base.device->functions.vkCreateRayTracingPipelinesKHR(base.device->device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &vkrtdesc, NULL, &vkrtP);
-    //if(result != VK_SUCCESS){
-    //    abort();
-    //}
-    //result = base.device->functions.vkCmdTraceRaysKHR()
-
-    WGPURayTracingShaderBindingTableStageDescriptor stages[3] = {
-        {
-            .stage = WGPUShaderStage_RayGen,
-            .module = raygenModule,
-        },
-        {
-            .stage = WGPUShaderStage_ClosestHit,
-            .module = rchitModule,
-        },
-        {
-            .stage = WGPUShaderStage_Miss,
-            .module = rmissModule,
-        }
-    };
     WGPURayTracingShaderBindingTableGroupDescriptor groups[3] = {
         // Group 0: RayGen
         {
-            .type = WGPURayTracingShaderBindingTableGroupType_General, 
-            .anyHitIndex = -1,
-            .closestHitIndex = -1,
-            .generalIndex = 0,
-            .intersectionIndex = -1,
+            .type = WGPURayTracingShaderBindingTableGroupType_General,
+            .generalIndex     = 0,
+            .closestHitIndex  = -1,
+            .anyHitIndex      = -1,
+            .intersectionIndex= -1
         },
-        // Group 1: Closest Hit (Triangle)
+        // Group 1: Procedural hit group (AABB)
         {
-            .type = WGPURayTracingShaderBindingTableGroupType_TrianglesHitGroup, 
-            .anyHitIndex = -1,
-            .closestHitIndex = 1,
-            .generalIndex = -1,
-            .intersectionIndex = -1,
+            .type = WGPURayTracingShaderBindingTableGroupType_ProceduralHitGroup,
+            .generalIndex     = -1,
+            .closestHitIndex  =  2, // rchit stage
+            .anyHitIndex      = -1,
+            .intersectionIndex=  3  // intersect stage
         },
         // Group 2: Miss
         {
             .type = WGPURayTracingShaderBindingTableGroupType_General,
-            .anyHitIndex = -1,
-            .closestHitIndex = -1,
-            .generalIndex = 2,
-            .intersectionIndex = -1,
-        },
+            .generalIndex     = 1, // miss stage
+            .closestHitIndex  = -1,
+            .anyHitIndex      = -1,
+            .intersectionIndex= -1
+        }
     };
 
-    WGPURayTracingShaderBindingTableDescriptor sbtableDesc = {
-        .stageCount = 3,
-        .stages = stages,
+    WGPURayTracingShaderBindingTableDescriptor sbtDesc = {
+        .stageCount = 4,
+        .stages     = stages,
         .groupCount = 3,
-        .groups = groups,
+        .groups     = groups
     };
-    WGPURayTracingShaderBindingTable sbt = wgpuDeviceCreateRayTracingShaderBindingTable(base.device, &sbtableDesc);
 
-    WGPURayTracingStateDescriptor rtState = {
-        .shaderBindingTable = sbt,
-        .maxPayloadSize = 64,
-        .maxRecursionDepth = 8
-    };
+    WGPURayTracingShaderBindingTable sbt = wgpuDeviceCreateRayTracingShaderBindingTable(device, &sbtDesc);
+
+    // -------------------------------------------------------------------------
+    // Ray tracing pipeline
+    // -------------------------------------------------------------------------
     WGPUBindGroupLayoutEntry bglEntries[3] = {
-        [0] = {
+        {
             .binding = 0,
             .visibility = WGPUShaderStage_RayGen | WGPUShaderStage_ClosestHit | WGPUShaderStage_Miss,
             .accelerationStructure = 1
         },
-        [1] = {
+        {
             .binding = 1,
-            .visibility = WGPUShaderStage_RayGen | WGPUShaderStage_ClosestHit | WGPUShaderStage_Miss,
+            .visibility = WGPUShaderStage_RayGen,
             .storageTexture = {
                 .viewDimension = WGPUTextureViewDimension_2D,
                 .access = WGPUStorageTextureAccess_WriteOnly,
                 .format = WGPUTextureFormat_RGBA32Float
             }
         },
-        [2] = {
+        {
             .binding = 2,
-            .visibility = WGPUShaderStage_RayGen | WGPUShaderStage_ClosestHit | WGPUShaderStage_Miss,
+            .visibility = WGPUShaderStage_RayGen,
             .buffer = {
                 .type = WGPUBufferBindingType_Uniform,
-                .minBindingSize = sizeof(float) * 16,
-                .hasDynamicOffset = 0
+                .minBindingSize = sizeof(struct Vector4) * 4,
+                .hasDynamicOffset = false
             }
         }
     };
+
     WGPUBindGroupLayoutDescriptor bglDesc = {
         .entries = bglEntries,
-        .entryCount = 3,
+        .entryCount = 3
     };
-    WGPUBindGroupLayout bgLayout = wgpuDeviceCreateBindGroupLayout(base.device, &bglDesc);
-    WGPUPipelineLayoutDescriptor pllDesc = {
-        .bindGroupLayoutCount = 1,
-        .bindGroupLayouts = &bgLayout,
-    };
-    WGPUPipelineLayout plLayout = wgpuDeviceCreatePipelineLayout(base.device, &pllDesc);
 
-    WGPURayTracingPipelineDescriptor rtpDescriptor = {
+    WGPUBindGroupLayout bgl = wgpuDeviceCreateBindGroupLayout(device, &bglDesc);
+
+    WGPUPipelineLayoutDescriptor plDesc = {
+        .bindGroupLayoutCount = 1,
+        .bindGroupLayouts = &bgl
+    };
+
+    WGPUPipelineLayout plLayout = wgpuDeviceCreatePipelineLayout(device, &plDesc);
+
+    WGPURayTracingStateDescriptor rtState = {
+        .shaderBindingTable = sbt,
+        .maxPayloadSize = 16,    // vec4 payload
+        .maxRecursionDepth = 1
+    };
+
+    WGPURayTracingPipelineDescriptor rtpDesc = {
         .rayTracingState = rtState,
         .layout = plLayout
     };
-    WGPURaytracingPipeline rtPipeline = wgpuDeviceCreateRayTracingPipeline(base.device, &rtpDescriptor);
 
+    WGPURaytracingPipeline rtPipeline =
+        wgpuDeviceCreateRayTracingPipeline(device, &rtpDesc);
+
+    // -------------------------------------------------------------------------
+    // Storage texture + camera UBO
+    // -------------------------------------------------------------------------
     const WGPUTextureFormat storageTextureFormat = WGPUTextureFormat_RGBA32Float;
-    WGPUTextureDescriptor storageTextureDescriptor = {
+
+    WGPUTextureDescriptor texDesc = {
         .usage = WGPUTextureUsage_StorageBinding | WGPUTextureUsage_CopySrc,
         .dimension = WGPUTextureDimension_2D,
         .size = {
-            .width = 1024,
-            .height = 1024,
+            .width = WIDTH,
+            .height = HEIGHT,
             .depthOrArrayLayers = 1
         },
         .format = storageTextureFormat,
         .mipLevelCount = 1,
         .sampleCount = 1,
         .viewFormatCount = 1,
-        .viewFormats = &storageTextureFormat,
+        .viewFormats = &storageTextureFormat
     };
-    WGPUTexture storageTexture = wgpuDeviceCreateTexture(base.device, &storageTextureDescriptor);
-    WGPUTextureViewDescriptor storageViewDescriptor = {
+
+    WGPUTexture storageTexture = wgpuDeviceCreateTexture(device, &texDesc);
+
+    WGPUTextureViewDescriptor viewDesc = {
         .format = storageTextureFormat,
         .dimension = WGPUTextureViewDimension_2D,
         .baseMipLevel = 0,
@@ -266,221 +416,139 @@ int main(){
         .baseArrayLayer = 0,
         .arrayLayerCount = 1,
         .aspect = WGPUTextureAspect_All,
-        .usage = WGPUTextureUsage_StorageBinding | WGPUTextureUsage_CopySrc,
+        .usage = WGPUTextureUsage_StorageBinding | WGPUTextureUsage_CopySrc
     };
 
-    WGPUTextureView storageTextureView = wgpuTextureCreateView(storageTexture,  &storageViewDescriptor);
-    WGPUBuffer camerabuffer = wgpuDeviceCreateBuffer(base.device, &(const WGPUBufferDescriptor){
-        .size = 64,
+    WGPUTextureView storageView = wgpuTextureCreateView(storageTexture, &viewDesc);
+
+    WGPUBuffer cameraBuffer = wgpuDeviceCreateBuffer(device, &(const WGPUBufferDescriptor){
+        .size = sizeof(struct Vector4) * 4,
         .usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst
     });
-    struct Vector4{float x,y,z,w;} cameraData[4] = {
-        {0, 0, -4, 0},
-        {0, 0, 0, 0},
-        {0, 1, 0, 0},
-        {1.1f, 0, 0, 0},
-    };
-    wgpuQueueWriteBuffer(base.queue, camerabuffer, 0, cameraData, 64);
 
-    WGPUBindGroupEntry bindGroupEntries[3] = {
+    struct Vector4 cameraData[4] = {
+        { 0.0f, 1.0f, -4.0f, 0.0f },  // eye
+        { 0.0f, 0.0f,  0.0f, 0.0f },  // target
+        { 0.0f, 1.0f,  0.0f, 0.0f },  // up
+        { 1.1f, 0.0f,  0.0f, 0.0f }   // fovY.x = ~63deg in radians
+    };
+
+    wgpuQueueWriteBuffer(queue, cameraBuffer, 0, cameraData, sizeof(cameraData));
+
+    WGPUBindGroupEntry bgEntries[3] = {
         {
             .binding = 0,
             .accelerationStructure = tlas
         },
         {
             .binding = 1,
-            .textureView = storageTextureView
+            .textureView = storageView
         },
         {
             .binding = 2,
-            .buffer = camerabuffer,
-            .size = WGPU_WHOLE_SIZE,
-        },
+            .buffer = cameraBuffer,
+            .size = WGPU_WHOLE_SIZE
+        }
     };
 
     WGPUBindGroupDescriptor bgDesc = {
-        .layout = bgLayout,
-        .entries = bindGroupEntries,
-        .entryCount = 3,
+        .layout = bgl,
+        .entries = bgEntries,
+        .entryCount = 3
     };
-    WGPUBindGroup bindGroup = wgpuDeviceCreateBindGroup(base.device, &bgDesc);
-    WGPUCommandEncoder cenc = wgpuDeviceCreateCommandEncoder(base.device, NULL);
-    WGPURayTracingPassDescriptor rtDesc = {
-        .maxRecursionDepth = 4,
-        .maxPayloadSize = 64,
-        .shaderBindingTable = sbt,
+
+    WGPUBindGroup bindGroup = wgpuDeviceCreateBindGroup(device, &bgDesc);
+
+    // -------------------------------------------------------------------------
+    // Ray tracing pass
+    // -------------------------------------------------------------------------
+    WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(device, NULL);
+
+    WGPURayTracingPassDescriptor rtPassDesc = {
+        .maxRecursionDepth = 1,
+        .maxPayloadSize = 16,
+        .shaderBindingTable = sbt
     };
-    WGPURaytracingPassEncoder rtenc = wgpuCommandEncoderBeginRaytracingPass(cenc, &rtDesc);
+
+    WGPURaytracingPassEncoder rtenc =
+        wgpuCommandEncoderBeginRaytracingPass(enc, &rtPassDesc);
+
     wgpuRaytracingPassEncoderSetPipeline(rtenc, rtPipeline);
     wgpuRaytracingPassEncoderSetBindGroup(rtenc, 0, bindGroup, 0, NULL);
-    wgpuRaytracingPassEncoderTraceRays(rtenc, 0, 1, 2, 1024, 1024, 1);
+    // Group indices: 0 = raygen, 1 = hit, 2 = miss
+    wgpuRaytracingPassEncoderTraceRays(rtenc, 0, 1, 2, WIDTH, HEIGHT, 1);
     wgpuRaytracingPassEncoderEnd(rtenc);
-    WGPUCommandBuffer cbuffer =  wgpuCommandEncoderFinish(cenc, NULL);
-    wgpuQueueSubmit(base.queue, 1, &cbuffer);
-    WGPUBuffer textureDump = wgpuDeviceCreateBuffer(base.device, &(const WGPUBufferDescriptor){
-        .size = ((size_t)1024) * 1024 * 16,
+
+    WGPUCommandBuffer cbuf = wgpuCommandEncoderFinish(enc, NULL);
+    wgpuQueueSubmit(queue, 1, &cbuf);
+    wgpuCommandEncoderRelease(enc);
+    wgpuCommandBufferRelease(cbuf);
+    wgpuQueueWaitIdle(queue);
+
+    // -------------------------------------------------------------------------
+    // Readback: copy texture -> buffer, map, write PNG
+    // -------------------------------------------------------------------------
+    size_t pixelCount = (size_t)WIDTH * (size_t)HEIGHT;
+    size_t floatPixelSize = 4 * sizeof(float);
+    size_t bufferSize = pixelCount * floatPixelSize;
+
+    WGPUBuffer readback = wgpuDeviceCreateBuffer(device, &(const WGPUBufferDescriptor){
+        .size = bufferSize,
         .usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst
     });
+
     {
-        WGPUTexelCopyTextureInfo source = {
+        WGPUTexelCopyTextureInfo src = {
             .texture = storageTexture,
             .mipLevel = 0,
-            .origin = {0},
-            .aspect = WGPUTextureAspect_All,
+            .origin = { 0, 0, 0 },
+            .aspect = WGPUTextureAspect_All
         };
-        WGPUTexelCopyBufferInfo dest = {
-            .buffer = textureDump,
+
+        WGPUTexelCopyBufferInfo dst = {
+            .buffer = readback,
             .layout = {
-                .bytesPerRow = 0,
-                .rowsPerImage = 0,
-                .offset = 0,
+                .bytesPerRow = WIDTH * floatPixelSize,
+                .rowsPerImage = HEIGHT,
+                .offset = 0
             }
         };
-        WGPUCommandEncoder dumpEnc = wgpuDeviceCreateCommandEncoder(base.device, NULL);
-        WGPUExtent3D copySize = {
-            1024, 1024, 1
-        };
-        wgpuCommandEncoderCopyTextureToBuffer(dumpEnc, &source, &dest, &copySize);
-        WGPUCommandBuffer buffer = wgpuCommandEncoderFinish(dumpEnc, NULL);
-        wgpuQueueSubmit(base.queue, 1, &buffer);
+
+        WGPUCommandEncoder dumpEnc = wgpuDeviceCreateCommandEncoder(device, NULL);
+        WGPUExtent3D copySize = { WIDTH, HEIGHT, 1 };
+
+        wgpuCommandEncoderCopyTextureToBuffer(dumpEnc, &src, &dst, &copySize);
+        WGPUCommandBuffer dumpBuf = wgpuCommandEncoderFinish(dumpEnc, NULL);
+        wgpuQueueSubmit(queue, 1, &dumpBuf);
         wgpuCommandEncoderRelease(dumpEnc);
-        wgpuCommandBufferRelease(buffer);
-        struct Vector4{float x,y,z,w;}* mapPointer = NULL;
-        wgpuBufferMap(textureDump, WGPUMapMode_Read, 0, WGPU_WHOLE_MAP_SIZE, (void**)&mapPointer);
-
-        struct rgba8{uint8_t r,g,b,a;}* rgba8data = calloc(1024 * 1024, 4);
-        for(size_t i = 0;i < 1024 * 1024;i++){
-            rgba8data[i].r = 255 * (mapPointer[i].x > 1.0f ? 1.0f : mapPointer[i].x);
-            rgba8data[i].g = 255 * (mapPointer[i].y > 1.0f ? 1.0f : mapPointer[i].y);
-            rgba8data[i].b = 255 * (mapPointer[i].z > 1.0f ? 1.0f : mapPointer[i].z);
-            rgba8data[i].a = 255;
-        }
-        stbi_write_png("rt.png", 1024, 1024, 4, rgba8data, 1024 * 4);
-        
+        wgpuCommandBufferRelease(dumpBuf);
+        wgpuQueueWaitIdle(queue);
     }
+
+    struct Float4 { float x, y, z, w; } *mapPtr = NULL;
+    wgpuBufferMap(readback, WGPUMapMode_Read, 0, WGPU_WHOLE_MAP_SIZE, (void **)&mapPtr);
+
+    struct RGBA8 { uint8_t r, g, b, a; };
+    struct RGBA8 *img = calloc(pixelCount, sizeof(struct RGBA8));
+
+    for (size_t i = 0; i < pixelCount; i++) {
+        float r = mapPtr[i].x;
+        float g = mapPtr[i].y;
+        float b = mapPtr[i].z;
+        if (r < 0.0f) r = 0.0f; if (r > 1.0f) r = 1.0f;
+        if (g < 0.0f) g = 0.0f; if (g > 1.0f) g = 1.0f;
+        if (b < 0.0f) b = 0.0f; if (b > 1.0f) b = 1.0f;
+
+        img[i].r = (uint8_t)(255.0f * r);
+        img[i].g = (uint8_t)(255.0f * g);
+        img[i].b = (uint8_t)(255.0f * b);
+        img[i].a = 255;
+    }
+
+    stbi_write_png("rt_aabb.png", WIDTH, HEIGHT, 4, img, WIDTH * 4);
+
+    free(img);
+    // (Cleanup of WGPU objects omitted for brevity.)
+
+    return 0;
 }
-
-
-
-const char raygenSource[] = R"(#version 460
-#extension GL_EXT_ray_tracing : require
-
-// Binding for acceleration structure
-layout(binding = 0) uniform accelerationStructureEXT topLevelAS;
-// Output image
-layout(binding = 1, rgba32f) uniform image2D image;
-// Camera uniform buffer
-
-
-layout(binding = 2) uniform CameraProperties {
-    vec4 eye;
-    vec4 target;
-    vec4 up;
-    vec4 fovY;
-} camera;
-
-// Ray payload - will be passed to closest hit or miss shader
-layout(location = 0) rayPayloadEXT vec4 payload;
-
-void main() {
-    // Get the current pixel coordinate
-    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
-    const vec2 inUV = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
-    vec2 d = inUV * 2.0 - 1.0;
-
-    // Calculate ray origin and direction using camera matrices
-    vec3 origin = camera.eye.xyz;
-    vec3 target = camera.target.xyz;
-    vec3 direction = normalize(target - origin);
-    vec3 left = cross(normalize(camera.up.xyz), direction);
-    vec3 realup = normalize(cross(direction, left));
-    float factor = tan(camera.fovY.x * 0.5f);
-    vec3 raydirection = normalize(direction + factor * d.x * left + factor * d.y * realup);
-
-    payload = vec4(0, 0, 0, 1);
-    // Initialize payload
-
-    // Trace ray
-    traceRayEXT(
-        topLevelAS,           // Acceleration structure
-        gl_RayFlagsOpaqueEXT, // Ray flags
-        0xFF,                 // Cull mask
-        0,                    // sbtRecordOffset
-        0,                    // sbtRecordStride
-        0,                    // missIndex
-        origin.xyz,           // Ray origin
-        0.001,                // Min ray distance
-        raydirection.xyz,     // Ray direction
-        100.0,                // Max ray distance
-        0                     // Payload location
-    );
-    
-    // Write result to output image
-    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(payload.xyz, 1.0f));
-    //imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(gl_LaunchIDEXT.x * 0.001f,0,0,1));
-}
-)";
-const char rchitSource[] = R"(#version 460
-#extension GL_EXT_ray_tracing : require
-#extension GL_EXT_nonuniform_qualifier : enable
-
-// Bind scene descriptors
-//layout(binding = 3) buffer SceneDesc { vec4 data[]; } sceneDesc;
-//layout(binding = 4) uniform sampler2D textures[];
-
-// Ray payload
-layout(location = 0) rayPayloadInEXT vec4 payload;
-
-// Hit attributes from intersection
-hitAttributeEXT vec2 attribs;
-
-// Shader record buffer index
-//layout(binding = 4) uniform _ShaderRecordBuffer {
-//    int materialID;
-//} shaderRecordBuffer;
-
-void main(){
-    // Basic surface color (replace with your material system)
-    vec3 hitColor = vec3(0.7, 0.7, 0.7);
-    
-    // Get hit triangle vertices
-    int primitiveID = gl_PrimitiveID;
-    int materialID = 0;//shaderRecordBuffer.materialID;
-    
-    // Simple diffuse shading based on normal
-    vec3 barycentrics = vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
-    
-    // Calculate surface normal using barycentric coordinates
-    // (In a real implementation, you would use vertex data)
-    vec3 normal = normalize(vec3(0, 1, 0)); // Simplified normal
-    
-    // Direction to light (hardcoded for simplicity)
-    vec3 lightDir = normalize(vec3(1, 1, 1));
-    
-    // Simple diffuse lighting
-    float diffuse = max(dot(normal, lightDir), 0.2);
-    
-    // Set final color
-    
-    //payload = vec4(1.0, 0.0, 0.0, 1.0);
-    payload = vec4(hitColor * diffuse, 1.0);
-    // payload = vec4(1.0,float(gl_InstanceID),0.0,1.0);
-}
-)";
-const char rmissSource[] = R"(#version 460
-#extension GL_EXT_ray_tracing : require
-
-// Ray payload
-layout(location = 0) rayPayloadInEXT vec4 payload;
-
-void main(){
-    // Sky color based on ray direction
-    vec3 dir = normalize(gl_WorldRayDirectionEXT);
-    
-    // Simple gradient for sky
-    float t = 0.5 * (dir.y + 1.0);
-    vec3 skyColor = mix(vec3(1.0, 1.0, 1.0), vec3(0.5, 0.7, 1.0), t);
-    
-    // Write sky color to payload
-    payload = vec4(0.1f, 0.1f, 0.2f, 1.0f);
-})";

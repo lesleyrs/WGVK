@@ -664,6 +664,8 @@ char* sw_sprintf(const char* format, ...) {
                         case 'p':
                             written = sprintf(temp_buf, temp_format, va_arg(args2, void*));
                             break;
+                        default: 
+                            break;
                     }
                     
                     if (written > 0) {
@@ -793,7 +795,7 @@ void PerframeCache_pushFenceDependencies(PerframeCache* pfcache, WGPUFence fence
     }
 }
 
-void FIFCache_init(FIFCache* fifCache, WGPUDevice device, uint32_t queueFamily){
+WGPUStatus FIFCache_init(FIFCache* fifCache, WGPUDevice device, uint32_t queueFamily){
     fifCache->device = device;
     VkSemaphoreCreateInfo sci = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     VkCommandPoolCreateInfo pci = { 
@@ -805,10 +807,12 @@ void FIFCache_init(FIFCache* fifCache, WGPUDevice device, uint32_t queueFamily){
     for(uint32_t i = 0;i < framesInFlight;i++){
         VkCommandPool* pool = &fifCache->frameCaches[i].commandPool;
         VkSemaphore* fts = &fifCache->frameCaches[i].finalTransitionSemaphore;
-        VkSemaphore* ftf = &fifCache->frameCaches[i].finalTransitionSemaphore;
         VkCommandBuffer* ftb = &fifCache->frameCaches[i].finalTransitionBuffer;
         VkResult scres = device->functions.vkCreateSemaphore(device->device, &sci, NULL, fts);
         VkResult cpcres = device->functions.vkCreateCommandPool(device->device, &pci, NULL, pool);
+        if(scres != VK_SUCCESS || cpcres != VK_SUCCESS){
+            return  WGPUStatus_Error;
+        }
         const VkCommandBufferAllocateInfo cbai = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .commandPool = *pool,
@@ -821,10 +825,13 @@ void FIFCache_init(FIFCache* fifCache, WGPUDevice device, uint32_t queueFamily){
         VkSemaphoreVector_reserve(semvec, 100);
         semvec->size = 100;
         for(uint32_t j = 0;j < semvec->size;j++){
-            device->functions.vkCreateSemaphore(device->device, &sci, NULL, semvec->data + j);
+            if(device->functions.vkCreateSemaphore(device->device, &sci, NULL, semvec->data + j) != VK_SUCCESS){
+                return WGPUStatus_Error;
+            }
         }
         device->functions.vkCreateSemaphore(device->device, &sci, NULL, &fifCache->frameCaches[i].syncState.acquireImageSemaphore);
     }
+    return WGPUStatus_Success;
 }
 
 void SyncState_destroy(WGPUDevice device, SyncState* syncState){
@@ -1027,13 +1034,13 @@ LayoutedRenderPass LoadRenderPassFromLayout(WGPUDevice device, RenderPassLayout 
     }
 
     
-    uint32_t colorAttachmentCount = layout.colorAttachmentCount;
+    const uint32_t colorAttachmentCount = layout.colorAttachmentCount;
     
 
     // Set up color attachment references for the subpass.
     VkAttachmentReference colorRefs[MAX_COLOR_ATTACHMENTS] = {0}; // list of color attachments
     uint32_t colorIndex = 0;
-    for (uint32_t i = 0; i < layout.colorAttachmentCount; i++) {
+    for (uint32_t i = 0; i < colorAttachmentCount; i++) {
         if (!is__depthVk(layout.colorAttachments[i].format)) {
             colorRefs[colorIndex].attachment = i;
             colorRefs[colorIndex].layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -1042,10 +1049,11 @@ LayoutedRenderPass LoadRenderPassFromLayout(WGPUDevice device, RenderPassLayout 
     }
 
     // Set up subpass description.
-    VkSubpassDescription subpass zeroinit;
-    subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount    = colorIndex;
-    subpass.pColorAttachments       = colorIndex ? colorRefs : NULL;
+    VkSubpassDescription subpass = {
+        .pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount    = colorIndex,
+        .pColorAttachments       = colorIndex ? colorRefs : NULL,
+    };
 
 
     // Assign depth attachment if present.
@@ -1275,7 +1283,6 @@ WGPUInstance wgpuCreateInstance(const WGPUInstanceDescriptor* descriptor) {
         if(endswith_(currentExtName, "surface") || strstr(currentExtName, "debug") != NULL || strstr(currentExtName, "swapchain_colorspace") != NULL){
             enabledExtensions[enabledExtensionCount++] = currentExtName;
         }
-        int desired = 0;
     }
     #if SUPPORT_DRM_SURFACE == 1
         enabledExtensions[enabledExtensionCount++] = "VK_KHR_display";
@@ -1342,7 +1349,7 @@ WGPUInstance wgpuCreateInstance(const WGPUInstanceDescriptor* descriptor) {
                 }
                 if(found){
                     char* dest = nullTerminatedRequestedLayers[requestedAvailableLayerCount];
-                    memcpy(dest, layerName, strlen(layerName));
+                    memcpy(dest, layerName, strlen(layerName) + 1);
                     nullTerminatedRequestedLayerPointers[requestedAvailableLayerCount] = dest;
                     ++requestedAvailableLayerCount;
                 }
@@ -1640,6 +1647,7 @@ static const char* DriverID_ToString(const VkDriverId id){
 PhysicalDeviceArchitecture GetArchitecture(uint32_t vendorId, uint32_t deviceId) {
     ENTRY();
     switch(vendorId) {
+        default: return PhysicalDeviceArchitecture_Unknown;
         case kVendorID_AMD: {
             switch (deviceId & 0xFFF0) {
                 case 0x1300:
@@ -1718,6 +1726,7 @@ PhysicalDeviceArchitecture GetArchitecture(uint32_t vendorId, uint32_t deviceId)
                     return PhysicalDeviceArchitecture_AMD_RDNA4;
                 case 0x7380:
                     return PhysicalDeviceArchitecture_AMD_CDNA1;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_ARM: {
@@ -1734,18 +1743,21 @@ PhysicalDeviceArchitecture GetArchitecture(uint32_t vendorId, uint32_t deviceId)
                 case 0xC0000000:
                 case 0xD0000000:
                     return PhysicalDeviceArchitecture_ARM_Gen5;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_Broadcom: {
             switch (deviceId & 0x00000000) {
                 case 0x00000000:
                     return PhysicalDeviceArchitecture_Broadcom_VideoCore;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_Google: {
             switch (deviceId) {
                 case 0xC0DE:
                     return PhysicalDeviceArchitecture_Google_Swiftshader;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_ImgTec: {
@@ -1759,6 +1771,7 @@ PhysicalDeviceArchitecture GetArchitecture(uint32_t vendorId, uint32_t deviceId)
                 case 0x35000000:
                 case 0x36000000:
                     return PhysicalDeviceArchitecture_ImgTec_Albiorix;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_Intel: {
@@ -1802,18 +1815,21 @@ PhysicalDeviceArchitecture GetArchitecture(uint32_t vendorId, uint32_t deviceId)
                     return PhysicalDeviceArchitecture_Intel_Xe2HPG;
                 case 0xB000:
                     return PhysicalDeviceArchitecture_Intel_Xe3LPG;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_Mesa: {
             switch (deviceId) {
                 case 0x0000:
                     return PhysicalDeviceArchitecture_Mesa_Software;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_Microsoft: {
             switch (deviceId) {
                 case 0x8c:
                     return PhysicalDeviceArchitecture_Microsoft_WARP;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_Nvidia: {
@@ -1853,6 +1869,7 @@ PhysicalDeviceArchitecture GetArchitecture(uint32_t vendorId, uint32_t deviceId)
                 case 0x2d00:
                 case 0x2f00:
                     return PhysicalDeviceArchitecture_Nvidia_Blackwell;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
             switch (deviceId & 0xFF000000) {
                 case 0x1e000000:
@@ -1865,6 +1882,7 @@ PhysicalDeviceArchitecture GetArchitecture(uint32_t vendorId, uint32_t deviceId)
                     return PhysicalDeviceArchitecture_Nvidia_Ampere;
                 case 0xa5000000:
                     return PhysicalDeviceArchitecture_Nvidia_Volta;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_QualcommPCI: {
@@ -1882,6 +1900,7 @@ PhysicalDeviceArchitecture GetArchitecture(uint32_t vendorId, uint32_t deviceId)
                     return PhysicalDeviceArchitecture_QualcommPCI_Adreno7xx;
                 case 0x44000000:
                     return PhysicalDeviceArchitecture_QualcommPCI_Adreno8xx;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_QualcommACPI: {
@@ -1894,6 +1913,7 @@ PhysicalDeviceArchitecture GetArchitecture(uint32_t vendorId, uint32_t deviceId)
                 case 0x37314400:
                 case 0x36334300:
                     return PhysicalDeviceArchitecture_QualcommACPI_Adreno7xx;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_Samsung: {
@@ -1903,10 +1923,12 @@ PhysicalDeviceArchitecture GetArchitecture(uint32_t vendorId, uint32_t deviceId)
                     return PhysicalDeviceArchitecture_Samsung_RDNA2;
                 case 0x02600200:
                     return PhysicalDeviceArchitecture_Samsung_RDNA3;
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
         case kVendorID_Huawei: {
             switch (deviceId & 0xFFFFFFFF) {
+                default: return PhysicalDeviceArchitecture_Unknown;
             }
         } break;
     }
@@ -1948,7 +1970,7 @@ void wgpuCreateAdapter_sync(void* userdata_v){
         
         if(i >= physicalDeviceCount) {
             // No CPU device found - forceFallbackAdapter requires one
-            RL_FREE(pds);
+            RL_FREE((void*)pds);
             const char res[] = "forceFallbackAdapter requested but no CPU device available";
             userdata->info.callback(
                 WGPURequestAdapterStatus_Unavailable,
@@ -1989,7 +2011,7 @@ void wgpuCreateAdapter_sync(void* userdata_v){
         
         // If nothing matched, fail
         if(i >= physicalDeviceCount) {
-            RL_FREE(pds);
+            RL_FREE((void*)pds);
             const char res[] = "No suitable adapter found matching power preference";
             userdata->info.callback(
                 WGPURequestAdapterStatus_Unavailable,
@@ -2323,10 +2345,6 @@ WGPUDevice wgpuAdapterCreateDevice(WGPUAdapter adapter, const WGPUDeviceDescript
     WGPUQueue retQueue = RL_CALLOC(1, sizeof(WGPUQueueImpl));
     retQueue->refCount = 0;
     VkResult dcresult = vkCreateDevice(adapter->physicalDevice, &createInfo, NULL, &(retDevice->device));
-    
-
-
-    struct VolkDeviceTable table = {0};
 
     if (dcresult != VK_SUCCESS) {
         TRACELOG(WGPU_LOG_FATAL, "vkCreateDevice failed: %s", vkErrorString(dcresult));
@@ -2389,21 +2407,15 @@ WGPUDevice wgpuAdapterCreateDevice(WGPUAdapter adapter, const WGPUDeviceDescript
             break;
         }
     }
+    
+    #if USE_VMA_ALLOCATOR == 1
+    
     const VmaPoolCreateInfo vpci = {
         .minAllocationAlignment = 64,
         .memoryTypeIndex = hostVisibleCoherentIndex,
         .blockSize = (1 << 16)
     };
-    #if USE_VMA_ALLOCATOR == 1
-    VmaDeviceMemoryCallbacks callbacks = {
-        0
-        //.pfnAllocate = [](VmaAllocator allocator, uint32_t type, VkDeviceMemory, VkDeviceSize size, void * _Nullable){
-        //    TRACELOG(WGPU_LOG_WARNING, "Allocating %llu of memory type %u", size, type);
-        //},
-        //.pfnFree = [](VmaAllocator allocator, uint32_t type, VkDeviceMemory, VkDeviceSize size, void * _Nullable){
-        //    TRACELOG(WGPU_LOG_WARNING, "Freeing %llu of memory type %u", size, type);
-        //}
-    };
+    VmaDeviceMemoryCallbacks callbacks = {0};
     VmaVulkanFunctions vmaVulkanFunctions = {0};
     VmaAllocatorCreateInfo aci = {
         .instance = adapter->instance->instance,
@@ -2427,11 +2439,8 @@ WGPUDevice wgpuAdapterCreateDevice(WGPUAdapter adapter, const WGPUDeviceDescript
     #endif
     retDevice->thread_pool = wgvk_thread_pool_create(4);
     wgvkAllocator_init(&retDevice->builtinAllocator, adapter->physicalDevice, retDevice, &retDevice->functions);
-    {
-
-        //auto [device, queue] = ret;
+    {;
         retDevice->queue = retQueue;
-
         retDevice->adapter = adapter;
         wgpuAdapterAddRef(adapter);
         retDevice->adapter = adapter;
@@ -10648,7 +10657,7 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
 
         for (uint32_t i = 0; i < geometryCount; i++) {
             geometries[i].sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-            geometries[i].flags = VK_GEOMETRY_OPAQUE_BIT_KHR; 
+            geometries[i].flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
             
             switch (descriptor->geometries[i].type) {
                 case WGPURayTracingAccelerationGeometryType_Triangles: {

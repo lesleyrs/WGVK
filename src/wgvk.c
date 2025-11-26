@@ -1306,7 +1306,7 @@ WGPUInstance wgpuCreateInstance(const WGPUInstanceDescriptor* descriptor) {
     VkLayerProperties availableLayers[64] = {0};
     uint32_t availableLayerCount = 0;
     VkResult layerEnumResult = vkEnumerateInstanceLayerProperties(&availableLayerCount, NULL);
-    if(layerEnumResult){
+    if(layerEnumResult == VK_SUCCESS){
         layerEnumResult = vkEnumerateInstanceLayerProperties(&availableLayerCount, availableLayers);
     }
     if(layerEnumResult != VK_SUCCESS){
@@ -10630,18 +10630,26 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
     WGPURayTracingAccelerationContainer ret = RL_CALLOC(1, sizeof(WGPURayTracingAccelerationContainerImpl));
     ret->level = descriptor->level;
     ret->device = device;
+    
+    // For BLAS, geometryCount is the number of meshes.
+    // For TLAS, geometryCount is 1 (A single geometry of type INSTANCES containing N primitives).
     uint32_t geometryCount = (descriptor->level == WGPURayTracingAccelerationContainerLevel_Bottom) ? descriptor->geometryCount : 1;
+    
     ret->geometryCount = geometryCount;
     ret->primitiveCounts = RL_CALLOC(geometryCount, sizeof(uint32_t));
     uint32_t* maxPrimitiveCounts = ret->primitiveCounts;
-    VkAccelerationStructureGeometryKHR* geometries = RL_CALLOC(geometryCount + descriptor->instanceCount, sizeof(VkAccelerationStructureGeometryKHR));
+    
+    // Allocate geometries and range infos based on the corrected geometryCount
+    VkAccelerationStructureGeometryKHR* geometries = RL_CALLOC(geometryCount, sizeof(VkAccelerationStructureGeometryKHR));
+    ret->buildRangeInfos = (VkAccelerationStructureBuildRangeInfoKHR*)RL_CALLOC(geometryCount, sizeof(VkAccelerationStructureBuildRangeInfoKHR));
+    
     if (descriptor->level == WGPURayTracingAccelerationContainerLevel_Bottom) {
+        ret->inputGeometryBuffers = (WGPUBuffer*)RL_CALLOC(geometryCount, sizeof(WGPUBuffer));
+
         for (uint32_t i = 0; i < geometryCount; i++) {
             geometries[i].sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-            geometries[i].flags = VK_GEOMETRY_OPAQUE_BIT_KHR; // Or dynamic based on descriptor
+            geometries[i].flags = VK_GEOMETRY_OPAQUE_BIT_KHR; 
             
-            ret->inputGeometryBuffers = (WGPUBuffer*)RL_CALLOC(geometryCount, sizeof(WGPUBuffer));
-            ret->buildRangeInfos = (VkAccelerationStructureBuildRangeInfoKHR*)RL_CALLOC(geometryCount, sizeof(VkAccelerationStructureBuildRangeInfoKHR));
             switch (descriptor->geometries[i].type) {
                 case WGPURayTracingAccelerationGeometryType_Triangles: {
                     geometries[i].geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
@@ -10694,9 +10702,8 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
         }
     }
     else if(descriptor->level == WGPURayTracingAccelerationContainerLevel_Top){
+        // Allocate host-side instance data to populate buffer
         VkAccelerationStructureInstanceKHR* vulkanInstances = RL_CALLOC(descriptor->instanceCount, sizeof(VkAccelerationStructureInstanceKHR));
-        
-        ret->buildRangeInfos = RL_CALLOC(descriptor->instanceCount, sizeof(VkAccelerationStructureBuildRangeInfoKHR));
 
         WGPUBufferDescriptor vfbDesc = {
             .size = descriptor->instanceCount * sizeof(VkAccelerationStructureInstanceKHR),
@@ -10704,10 +10711,12 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
         };
 
         ret->instanceBuffer = wgpuDeviceCreateBuffer(device, &vfbDesc);
-        for(uint32_t i = 0;i < descriptor->instanceCount;i++){
+        
+        // 1. Loop through instances to fill the buffer data
+        for(uint32_t i = 0; i < descriptor->instanceCount; i++){
             const WGPURayTracingAccelerationInstanceDescriptor* wgpuInstance = descriptor->instances + i;
             VkAccelerationStructureInstanceKHR* vulkanInstance = vulkanInstances + i;
-            maxPrimitiveCounts[i] = 1;
+            
             memcpy(&vulkanInstance->transform, &wgpuInstance->transformMatrix, sizeof(VkTransformMatrixKHR));
             
             vulkanInstance->instanceCustomIndex = wgpuInstance->instanceId;
@@ -10726,28 +10735,32 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
             vulkanInstance->accelerationStructureReference = device->functions.vkGetAccelerationStructureDeviceAddressKHR(device->device, &getASDeviceAddressInfo);
         }
         
+        // Write the instance data to GPU memory
         wgpuQueueWriteBuffer(device->queue, ret->instanceBuffer, 0, vulkanInstances, vfbDesc.size);
-        for(uint32_t i = 0;i < descriptor->instanceCount;i++){
-            geometries[i].sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-            geometries[i].geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
-            geometries[i].geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
-            geometries[i].geometry.instances.data.deviceAddress = ret->instanceBuffer->address;
-            geometries[i].geometry.instances.arrayOfPointers = VK_FALSE;
+        RL_FREE(vulkanInstances); // Clean up temp host memory
 
-            ret->buildRangeInfos[i].primitiveCount = 1; 
-            ret->buildRangeInfos[i].primitiveOffset = i * sizeof(VkAccelerationStructureInstanceKHR);
-            ret->buildRangeInfos[i].firstVertex = 0;
-            ret->buildRangeInfos[i].transformOffset = 0;
-        }
+        // 2. Configure the SINGLE geometry entry for the TLAS
+        // The instance count is handled by primitiveCount, not geometryCount.
+        maxPrimitiveCounts[0] = descriptor->instanceCount;
+
+        geometries[0].sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        geometries[0].geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+        geometries[0].geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+        geometries[0].geometry.instances.data.deviceAddress = ret->instanceBuffer->address;
+        geometries[0].geometry.instances.arrayOfPointers = VK_FALSE;
+
+        ret->buildRangeInfos[0].primitiveCount = descriptor->instanceCount; 
+        ret->buildRangeInfos[0].primitiveOffset = 0;
+        ret->buildRangeInfos[0].firstVertex = 0;
+        ret->buildRangeInfos[0].transformOffset = 0;
     }
-    ret->geometries = geometries;
-
     
+    ret->geometries = geometries;
 
     VkAccelerationStructureBuildGeometryInfoKHR geometryInfoVulkan = {
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .pGeometries = geometries,
-        .geometryCount = geometryCount,
+        .geometryCount = geometryCount, // This is 1 for TLAS
         .type = descriptor->level == WGPURayTracingAccelerationContainerLevel_Bottom ? VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR : VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
         .dstAccelerationStructure = VK_NULL_HANDLE
     };
@@ -10760,10 +10773,9 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
         device->device,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_HOST_OR_DEVICE_KHR,
         &geometryInfoVulkan,
-        maxPrimitiveCounts,
+        maxPrimitiveCounts, // For TLAS, this array has length 1, and the value is instanceCount
         &buildSizesInfo
     );
-    
     
     ret->accelerationStructureBuffer = wgpuDeviceCreateBuffer(device, &(WGPUBufferDescriptor){
         .size = buildSizesInfo.accelerationStructureSize,
@@ -10802,8 +10814,12 @@ WGPURayTracingAccelerationContainer wgpuDeviceCreateRayTracingAccelerationContai
         return NULL;
     }
     
+    // Update the geometry info with the created AS handle for future use (e.g. building)
     geometryInfoVulkan.dstAccelerationStructure = ret->accelerationStructure;
-    geometryInfoVulkan.geometryCount = descriptor->geometryCount;
+    // NOTE: Do not overwrite geometryCount with descriptor->geometryCount here, 
+    // strictly keep the calculated variable which is 1 for TLAS.
+    // geometryInfoVulkan.geometryCount = geometryCount; 
+    
     wgpuDeviceAddRef(device);
     return ret;
     EXIT();

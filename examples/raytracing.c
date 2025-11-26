@@ -71,7 +71,7 @@ int main(){
         0,0,1,0
     };
     WGPUTransformMatrix identity2 = {
-        1,0,0,0,
+        1,0,0,1,
         0,1,0,0,
         0,0,1,0
     };
@@ -88,7 +88,7 @@ int main(){
         },
         {
             .usage = WGPURayTracingAccelerationInstanceUsage_TriangleCullDisable,
-            .instanceId = 0,
+            .instanceId = 1,
             .instanceOffset = 0,
             .mask = 0xff,
             .transformMatrix = identity2,

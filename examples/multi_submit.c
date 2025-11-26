@@ -4,7 +4,6 @@
 #include <external/incbin.h>
 #include <string.h>
 #include <stdlib.h>
-#include <math.h>
 
 #ifndef STRVIEW
     #define STRVIEW(X) (WGPUStringView){X, sizeof(X) - 1}
@@ -223,7 +222,7 @@ int main(){
     WGPURequestDeviceCallbackInfo requestDeviceCallbackInfo = {
         .callback = deviceCallbackFunction,
         .mode = WGPUCallbackMode_WaitAnyOnly,
-        .userdata1 = &device
+        .userdata1 = (void*)&device
     };
     WGPUFuture requestDeviceFuture = wgpuAdapterRequestDevice(requestedAdapter, &deviceDescriptor, requestDeviceCallbackInfo);
     WGPUFutureWaitInfo requestDeviceFutureWaitInfo = {

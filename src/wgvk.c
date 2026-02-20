@@ -2639,6 +2639,7 @@ WGPUFuture wgpuAdapterRequestDevice(WGPUAdapter adapter, WGPU_NULLABLE WGPUDevic
     userdataforcreatedevice* userdata = RL_CALLOC(1, sizeof(userdataforcreatedevice));
     userdata->adapter = adapter;
     userdata->callbackInfo = callbackInfo;
+    if(options)
     userdata->deviceDescriptor = *options;
     WGPUFutureImpl impl = {
         .userdataForFunction = userdata,
@@ -3603,7 +3604,7 @@ WGPUShaderModule wgpuDeviceCreateShaderModule(WGPUDevice device, const WGPUShade
         #endif
         default: {
             RL_FREE(ret);
-            wgvk_assert(false, "Invalid shader source type");
+            //wgvk_assert(false, "Invalid shader source type");
             return NULL;
         }
     }

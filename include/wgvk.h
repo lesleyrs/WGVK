@@ -2151,7 +2151,7 @@ WGVK_EXPORT void wgpuInstanceAddRef                       (WGPUInstance instance
 WGVK_EXPORT void wgpuAdapterAddRef                        (WGPUAdapter adapter);
 WGVK_EXPORT void wgpuDeviceAddRef                         (WGPUDevice device);
 WGVK_EXPORT void wgpuQueueAddRef                          (WGPUQueue device);
-WGVK_EXPORT void wgpuReleaseRaytracingPassEncoder         (WGPURaytracingPassEncoder rtenc);
+WGVK_EXPORT void wgpuRaytracingPassEncoderRelease         (WGPURaytracingPassEncoder rtenc);
 WGVK_EXPORT void wgpuTextureAddRef                        (WGPUTexture texture);
 WGVK_EXPORT void wgpuTextureViewAddRef                    (WGPUTextureView textureView);
 WGVK_EXPORT void wgpuSamplerAddRef                        (WGPUSampler texture);

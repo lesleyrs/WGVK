@@ -5002,7 +5002,7 @@ static CmdBarrierSet GetCompatibilityBarriers(WGPUCommandBuffer srcBuffer, WGPUC
         const BufferUsageRecord* dstValue = BufferUsageRecordMap_get(&dstBuffer->resourceUsage.referencedBuffers, srcPair->key);
         if(dstValue){
             VkBufferMemoryBarrier insert = {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
                 .buffer = ((WGPUBuffer)srcPair->key)->buffer,
                 .offset = 0,
                 .size = ((WGPUBuffer)srcPair->key)->capacity,
@@ -5887,7 +5887,7 @@ static void releaseCPSetCallback(WGPUComputePassEncoder cpEncoder, void* unused)
 }
 
 static void releaseRTSetCallback(WGPURaytracingPassEncoder rtEncoder, void* unused){
-    wgpuReleaseRaytracingPassEncoder(rtEncoder);
+    wgpuRaytracingPassEncoderRelease(rtEncoder);
 }
 
 void wgpuCommandEncoderRelease(WGPUCommandEncoder commandEncoder) {
@@ -6727,23 +6727,24 @@ void wgpuCommandEncoderCopyBufferToTexture (WGPUCommandEncoder commandEncoder, c
     
     ++commandEncoder->encodedCommandCount;
     
+    const bool is3D = destination->texture->dimension == VK_IMAGE_TYPE_3D;
     const VkBufferImageCopy region = {
-        .bufferOffset = 0,
+        .bufferOffset = source->layout.offset,
         .bufferRowLength = source->layout.bytesPerRow / vkFormatSize(destination->texture->format),
         .bufferImageHeight = source->layout.rowsPerImage,
         .imageSubresource.aspectMask = toVulkanAspectMaskVk(destination->aspect, destination->texture->format),
-        .imageSubresource.mipLevel = 0,
-        .imageSubresource.baseArrayLayer = 0,
-        .imageSubresource.layerCount = 1,
+        .imageSubresource.mipLevel = destination->mipLevel,
+        .imageSubresource.baseArrayLayer = is3D ? 0 : destination->origin.z,
+        .imageSubresource.layerCount = is3D ? 1 : copySize->depthOrArrayLayers,
         .imageOffset = CLITERAL(VkOffset3D){
             (int32_t)destination->origin.x,
             (int32_t)destination->origin.y,
-            (int32_t)destination->origin.z,
+            is3D ? (int32_t)destination->origin.z : 0,
         },
         .imageExtent = CLITERAL(VkExtent3D){
             copySize->width,
             copySize->height,
-            copySize->depthOrArrayLayers
+            is3D ? copySize->depthOrArrayLayers : 1
         },
     };
     
@@ -6756,8 +6757,8 @@ void wgpuCommandEncoderCopyBufferToTexture (WGPUCommandEncoder commandEncoder, c
             .aspectMask = destination->aspect,
             .baseMipLevel = destination->mipLevel,
             .levelCount = 1,
-            .baseArrayLayer = destination->origin.z,
-            .layerCount = 1
+            .baseArrayLayer = is3D ? 0 : destination->origin.z,
+            .layerCount = is3D ? 1 : copySize->depthOrArrayLayers
         }
     });
 
@@ -6767,6 +6768,7 @@ void wgpuCommandEncoderCopyBufferToTexture (WGPUCommandEncoder commandEncoder, c
 void wgpuCommandEncoderCopyTextureToBuffer (WGPUCommandEncoder commandEncoder, const WGPUTexelCopyTextureInfo* source, const WGPUTexelCopyBufferInfo* destination, const WGPUExtent3D* copySize){
     ENTRY();
     ++commandEncoder->encodedCommandCount;
+    const bool is3D = source->texture->dimension == VK_IMAGE_TYPE_3D;
     ce_trackTexture(
         commandEncoder,
         source->texture,
@@ -6777,32 +6779,32 @@ void wgpuCommandEncoderCopyTextureToBuffer (WGPUCommandEncoder commandEncoder, c
             .subresource = {
                 .aspectMask     = toVulkanAspectMaskVk(source->aspect, source->texture->format),
                 .baseMipLevel   = source->mipLevel,
-                .baseArrayLayer = source->origin.z, // ?
-                .layerCount     = 1,
+                .baseArrayLayer = is3D ? 0 : source->origin.z,
+                .layerCount     = is3D ? 1 : copySize->depthOrArrayLayers,
                 .levelCount     = 1,
             }
     });
     ce_trackBuffer(commandEncoder, destination->buffer, (BufferUsageSnap){VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT});
-    
+
     VkBufferImageCopy region = {
         .bufferOffset = destination->layout.offset,
         .bufferRowLength = destination->layout.bytesPerRow / vkFormatSize(source->texture->format),
         .bufferImageHeight = destination->layout.rowsPerImage,
         .imageSubresource = {
             .aspectMask = toVulkanAspectMaskVk(source->aspect, source->texture->format),
-            .baseArrayLayer = source->origin.z, // ?
+            .baseArrayLayer = is3D ? 0 : source->origin.z,
             .mipLevel = source->mipLevel,
-            .layerCount = 1,
+            .layerCount = is3D ? 1 : copySize->depthOrArrayLayers,
         },
         .imageOffset = {
             .x = (int32_t)source->origin.x,
             .y = (int32_t)source->origin.y,
-            .z = (int32_t)source->origin.z
+            .z = is3D ? (int32_t)source->origin.z : 0
         },
         .imageExtent = {
             .width  = copySize->width,
             .height = copySize->height,
-            .depth  = copySize->depthOrArrayLayers
+            .depth  = is3D ? copySize->depthOrArrayLayers : 1
         }
     };
     commandEncoder->device->functions.vkCmdCopyImageToBuffer(
@@ -6817,6 +6819,8 @@ void wgpuCommandEncoderCopyTextureToBuffer (WGPUCommandEncoder commandEncoder, c
 void wgpuCommandEncoderCopyTextureToTexture(WGPUCommandEncoder commandEncoder, const WGPUTexelCopyTextureInfo* source, const WGPUTexelCopyTextureInfo* destination, const WGPUExtent3D* copySize){
     ENTRY();
     ++commandEncoder->encodedCommandCount;
+    const bool srcIs3D = source->texture->dimension == VK_IMAGE_TYPE_3D;
+    const bool dstIs3D = destination->texture->dimension == VK_IMAGE_TYPE_3D;
     ce_trackTexture(
         commandEncoder,
         source->texture,
@@ -6827,8 +6831,8 @@ void wgpuCommandEncoderCopyTextureToTexture(WGPUCommandEncoder commandEncoder, c
             .subresource = {
                 .aspectMask     = source->aspect,
                 .baseMipLevel   = source->mipLevel,
-                .baseArrayLayer = source->origin.z, // ?
-                .layerCount     = 1,
+                .baseArrayLayer = srcIs3D ? 0 : source->origin.z,
+                .layerCount     = srcIs3D ? 1 : copySize->depthOrArrayLayers,
                 .levelCount     = 1,
             }
     });
@@ -6842,8 +6846,8 @@ void wgpuCommandEncoderCopyTextureToTexture(WGPUCommandEncoder commandEncoder, c
             .subresource = {
                 .aspectMask     = destination->aspect,
                 .baseMipLevel   = destination->mipLevel,
-                .baseArrayLayer = destination->origin.z, // ?
-                .layerCount     = 1,
+                .baseArrayLayer = dstIs3D ? 0 : destination->origin.z,
+                .layerCount     = dstIs3D ? 1 : copySize->depthOrArrayLayers,
                 .levelCount     = 1,
             }
     });
@@ -6852,21 +6856,21 @@ void wgpuCommandEncoderCopyTextureToTexture(WGPUCommandEncoder commandEncoder, c
         .srcSubresource = {
             .aspectMask = source->aspect,
             .mipLevel = source->mipLevel,
-            .baseArrayLayer = destination->origin.z, // ?
-            .layerCount = 1,
+            .baseArrayLayer = srcIs3D ? 0 : source->origin.z,
+            .layerCount = srcIs3D ? 1 : copySize->depthOrArrayLayers,
         },
         .srcOffsets = {
-            {source->origin.x, source->origin.y, source->origin.z},
-            {source->origin.x + copySize->width, source->origin.y + copySize->height, source->origin.z + copySize->depthOrArrayLayers}
+            {source->origin.x, source->origin.y, srcIs3D ? source->origin.z : 0},
+            {source->origin.x + copySize->width, source->origin.y + copySize->height, srcIs3D ? source->origin.z + copySize->depthOrArrayLayers : 1}
         },
         .dstSubresource = {
             .aspectMask = destination->aspect,
             .mipLevel = destination->mipLevel,
-            .baseArrayLayer = destination->origin.z, // ?
-            .layerCount = 1,
+            .baseArrayLayer = dstIs3D ? 0 : destination->origin.z,
+            .layerCount = dstIs3D ? 1 : copySize->depthOrArrayLayers,
         },
-        .dstOffsets[0] = {destination->origin.x,                   destination->origin.y,                    destination->origin.z},
-        .dstOffsets[1] = {destination->origin.x + copySize->width, destination->origin.y + copySize->height, destination->origin.z + copySize->depthOrArrayLayers}
+        .dstOffsets[0] = {destination->origin.x, destination->origin.y, dstIs3D ? destination->origin.z : 0},
+        .dstOffsets[1] = {destination->origin.x + copySize->width, destination->origin.y + copySize->height, dstIs3D ? destination->origin.z + copySize->depthOrArrayLayers : 1}
     };
     commandEncoder->device->functions.vkCmdBlitImage(
         commandEncoder->buffer,
@@ -7080,7 +7084,7 @@ void wgpuComputePassEncoderRelease(WGPUComputePassEncoder cpenc){
     EXIT();
 }
 
-void wgpuReleaseRaytracingPassEncoder(WGPURaytracingPassEncoder rtenc){
+void wgpuRaytracingPassEncoderRelease(WGPURaytracingPassEncoder rtenc){
     ENTRY();
     --rtenc->refCount;
     if(rtenc->refCount == 0){
@@ -7520,21 +7524,21 @@ WGPUSampler wgpuDeviceCreateSampler(WGPUDevice device, const WGPUSamplerDescript
     EXIT();
     return ret;
 }
-void wgpuRenderPassEncoderSetVertexBuffer(WGPURenderPassEncoder rpe, uint32_t binding, WGPUBuffer buffer, uint64_t offset, uint64_t size) {
+void wgpuRenderPassEncoderSetVertexBuffer(WGPURenderPassEncoder rpe, uint32_t slot, WGPUBuffer buffer, uint64_t offset, uint64_t size) {
     ENTRY();
     wgvk_assert(rpe != NULL, "RenderPassEncoderHandle is null");
     wgvk_assert(buffer != NULL, "BufferHandle is null");
     RenderPassCommandGeneric insert = {
         .type = rp_command_type_set_vertex_buffer,
         .setVertexBuffer = {
-            binding,
+            slot,
             buffer,
             offset,
         }
     };
 
     RenderPassEncoder_PushCommand(rpe, &insert);
-    
+
     ce_trackBuffer(rpe->cmdEncoder, buffer, (BufferUsageSnap){
         .access =  VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, 
         .stage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT
